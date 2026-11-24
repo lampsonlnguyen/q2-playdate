@@ -9,6 +9,7 @@
 
 #include "lauxlib.h"
 #include "card.h"
+#include "bundle.h"
 
 enum { MAX_PDZ = 8 * 1024 * 1024, MAX_CHUNK = 2 * 1024 * 1024 };
 
@@ -92,79 +93,83 @@ static void limit_instructions(lua_State *lua, lua_Debug *debug)
     luaL_error(lua, "probe instruction limit exceeded");
 }
 
-int main(int argc, char **argv)
+lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
+                       char *error, size_t error_size)
 {
-    if (argc > 2) {
-        fprintf(stderr, "usage: %s path/to/game.pdx\n", argv[0]);
-        return EXIT_FAILURE;
-    }
-
-    const char *bundle = argc == 1 ? CARD_BUNDLE : argv[1];
     char path[4096];
     int length = snprintf(path, sizeof(path), "%s/pdex.bin", bundle);
     if (length < 0 || (size_t)length >= sizeof(path)) {
-        fprintf(stderr, "bundle path is too long\n");
-        return EXIT_FAILURE;
+        snprintf(error, error_size, "Bundle path is too long");
+        return NULL;
     }
     struct stat info;
     if (stat(path, &info) == 0) {
-        fprintf(stderr, "native Playdate bundles are unsupported\n");
-        return EXIT_FAILURE;
+        snprintf(error, error_size, "native Playdate bundles are unsupported");
+        return NULL;
     }
 
     snprintf(path, sizeof(path), "%s/main.pdz", bundle);
     FILE *file = fopen(path, "rb");
     if (!file) {
-        perror(path);
-        return EXIT_FAILURE;
+        snprintf(error, error_size, "Bundle has no readable main.pdz");
+        return NULL;
     }
     if (fstat(fileno(file), &info) != 0 || !S_ISREG(info.st_mode) ||
         info.st_size < 16 || info.st_size > MAX_PDZ) {
-        fprintf(stderr, "main.pdz must be a regular file between 16 bytes and 8 MiB\n");
+        snprintf(error, error_size, "main.pdz must be a regular file between 16 bytes and 8 MiB");
         fclose(file);
-        return EXIT_FAILURE;
+        return NULL;
     }
     size_t size = (size_t)info.st_size;
     unsigned char *pdz = malloc(size);
     if (!pdz || fread(pdz, 1, size, file) != size) {
-        fprintf(stderr, "could not read main.pdz\n");
+        snprintf(error, error_size, "Could not read main.pdz");
         fclose(file);
         free(pdz);
-        return EXIT_FAILURE;
+        return NULL;
     }
     fclose(file);
 
     lua_State *lua = luaL_newstate();
-    if (!lua) {
-        fprintf(stderr, "could not create the Lua VM\n");
-        free(pdz);
-        return EXIT_FAILURE;
-    }
-
-    const char *error = load_main(lua, pdz, size);
+    const char *problem = lua ? load_main(lua, pdz, size) : "Could not create the Lua VM";
     free(pdz);
-    if (!error) {
+    if (!problem) {
         lua_newtable(lua);
-        if (argc == 1)
-            card_lua_init(lua);
+        if (setup)
+            setup(lua);
         lua_setglobal(lua, "playdate");
         lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 100000);
         if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
-            error = lua_tostring(lua, -1);
-            if (!error)
-                error = "Lua initialization failed";
+            problem = lua_tostring(lua, -1);
+            if (!problem)
+                problem = "Lua initialization failed";
         }
     }
 
-    int result = EXIT_FAILURE;
-    if (error) {
+    if (problem) {
+        snprintf(error, error_size, "%s", problem);
+        if (lua)
+            lua_close(lua);
+        return NULL;
+    }
+    return lua;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 1)
+        return card_run();
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s path/to/game.pdx\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+    char error[256];
+    lua_State *lua = bundle_open(argv[1], NULL, error, sizeof error);
+    if (!lua) {
         fprintf(stderr, "%s\n", error);
-    } else if (argc == 1) {
-        result = card_run(lua);
-    } else {
-        puts("Executed main Lua chunk");
-        result = EXIT_SUCCESS;
+        return EXIT_FAILURE;
     }
     lua_close(lua);
-    return result;
+    puts("Executed main Lua chunk");
+    return EXIT_SUCCESS;
 }

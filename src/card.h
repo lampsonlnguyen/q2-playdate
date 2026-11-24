@@ -1,8 +1,7 @@
 #pragma once
 
-#include "lua.h"
+#ifndef CARD_ROOT
+#define CARD_ROOT "/mnt/mmc/.playdate"
+#endif
 
-#define CARD_BUNDLE "/mnt/mmc/.playdate/demo.pdx"
-
-void card_lua_init(lua_State *lua);
-int card_run(lua_State *lua);
+int card_run(void);

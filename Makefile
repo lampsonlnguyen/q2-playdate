@@ -16,9 +16,9 @@ $(LUA_DIR)/.pinned:
 	git -C $(LUA_DIR) checkout --detach $(LUA_REV)
 	touch $@
 
-$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h Makefile $(LUA_DIR)/.pinned
+$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/picker.c src/picker.h Makefile $(LUA_DIR)/.pinned
 	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) $(LDFLAGS) -o $@ src/runner.c src/card.c $(LUA_SOURCES) -lm -lz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) $(LDFLAGS) -o $@ src/runner.c src/card.c src/picker.c $(LUA_SOURCES) -lm -lz
 
 build/luac: Makefile $(LUA_DIR)/.pinned
 	$(HOST_CC) -O2 -I$(LUA_DIR) -o $@ $(LUA_DIR)/luac.c $(LUA_SOURCES) -lm
@@ -29,7 +29,7 @@ check: all build/luac
 
 card: $(BUILD)/q2-playdate
 	readelf -h $< | grep -q 'Machine:.*MIPS'
-	mkdir -p $(BUILD)/card/.playdate
+	mkdir -p $(BUILD)/card/.playdate/games
 	cp $< q2app $(BUILD)/card/.playdate/
 	$(PDC) demo $(BUILD)/card/.playdate/demo.pdx
-	cd $(BUILD)/card && zip -q -r ../q2-playdate-card.zip .playdate
+	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/demo.pdx .playdate/games/

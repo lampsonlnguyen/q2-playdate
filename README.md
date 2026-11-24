@@ -2,7 +2,7 @@
 
 An experimental Playdate compatibility project for the Shanling Q2 running Q2 Pod. The first goal is to run a small, Lua-only Playdate demo from an unpacked `.pdx` directory as a standalone microSD app under **Library → Games**.
 
-**Status:** M2 has an experimental microSD demo. The Lua loader has passed desktop and MIPS32 emulation tests. Physical Q2 testing is pending.
+**Status:** M3 adds an experimental Cover Flow-style library and game controls. The Lua loader has passed desktop and MIPS32 emulation tests. Physical Q2 testing is pending.
 
 ## Try the crank demo
 
@@ -12,9 +12,20 @@ Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its ta
 make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static PDC=/path/to/PlaydateSDK/bin/pdc
 ```
 
-Extract `build/mipsel/q2-playdate-card.zip` to the microSD root so `.playdate/q2app`, `.playdate/q2-playdate`, and `.playdate/demo.pdx` are directly inside the hidden app folder. On Q2 Pod, reopen **Library → Games** and select **Q2 Playdate**. Spin the wheel to move the marker and press Back to exit. After a clean Back exit, `.playdate/last-run.txt` records frame count, update/render timings, and peak process RSS.
+Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reopen **Library → Games → Q2 Playdate**. Copy trusted, unpacked Lua bundles to `.playdate/games/<title>.pdx/` and reopen the app to refresh the library. The built-in Crank Demo is always the first card. Other cards use their folder names and generic artwork. The single-screen picker supports up to 63 user bundles.
 
-The bundled demo uses a small set of Lua APIs for drawing rectangles and reading crank movement. The 400 × 240 image scales to 320 × 192 and is centered on the Q2 display.
+| Q2 control | Library | In a game |
+| --- | --- | --- |
+| Wheel | Browse covers | Crank |
+| Previous / Next | Browse covers | Left / Right |
+| Return / Play-Pause | Exit / — | Up / Down |
+| Centre | Open selected game | A |
+| Touch | Swipe, tap side covers, or tap the centre cover to play | B or menu |
+| Hold Return | Exit | Exit |
+
+The in-game menu offers Resume, Game Library, and Exit to Q2 Pod. It sits above the game picture and B sits below it. The Crank Demo doubles crank travel while A is held and resets the marker on B. Q2 Pod stops music when launching the app so it can forward the side keys. Returning to the library or exiting a game writes frame timing and peak process RSS to `.playdate/last-run.txt`.
+
+The 400 × 240 game picture scales to 320 × 192. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. Bundles that require imports, native ARM, encryption, or other Playdate APIs may fail. The picker displays the loader or Lua error and stays open.
 
 ## Build the Lua probe
 

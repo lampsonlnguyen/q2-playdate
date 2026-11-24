@@ -1,2 +1,4 @@
 name=Q2 Playdate
 game=1
+audio=1
+gameview=1
