@@ -6,9 +6,9 @@ import tempfile
 import zlib
 
 
-def entry(name, flags, data):
+def entry(name, flags, data, offset=0):
     header = struct.pack("<I", (len(data) << 8) | flags) + name + b"\0"
-    return header + bytes(-len(header) % 4) + data
+    return header + bytes(-(offset + len(header)) % 4) + data
 
 
 def main():
@@ -37,6 +37,21 @@ def main():
         check(header + entry(b"main", 1, chunk)[:-1], "truncated PDZ entry")
         check(header + entry(b"other", 1, chunk), "no main Lua chunk")
         check(header[:12] + struct.pack("<I", 0x40000000), "encrypted PDZ")
+        def compile_lua(code):
+            source.write_text(code)
+            subprocess.run([luac, "-o", bytecode, source], check=True)
+            return bytecode.read_bytes()
+
+        module = compile_lua("count = (count or 0) + 1")
+        imported = compile_lua(
+            'import("lib/counter"); import("lib/counter.lua"); '
+            'assert(count == 1 and math.floor(1.9) == 1)'
+        )
+        modules = entry(b"lib/counter", 129,
+                        struct.pack("<I", len(module)) + zlib.compress(module))
+        check(header + modules + entry(b"main", 1, imported, len(header) + len(modules)),
+              "Executed main Lua chunk", True)
+        check(header + entry(b"main", 1, imported), "missing Lua import: lib/counter")
         (bundle / "pdex.bin").touch()
         check(header + entry(b"main", 1, chunk), "native Playdate bundles")
         print("PDX smoke tests passed")

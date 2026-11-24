@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -101,6 +102,58 @@ static int fill_rect(lua_State *lua)
     return 0;
 }
 
+static int draw_rect(lua_State *lua)
+{
+    int64_t x = luaL_checkinteger(lua, 1), y = luaL_checkinteger(lua, 2);
+    int64_t w = luaL_checkinteger(lua, 3), h = luaL_checkinteger(lua, 4);
+    if (w <= 0 || h <= 0)
+        return 0;
+    int left = clamp(x, SOURCE_WIDTH), right = clamp(x + w, SOURCE_WIDTH);
+    int top = clamp(y, SOURCE_HEIGHT), bottom = clamp(y + h, SOURCE_HEIGHT);
+    for (int row = top; row < bottom; row++) {
+        if (row == y || row == y + h - 1)
+            memset(frame[row] + left, color, right - left);
+        else {
+            if (x >= 0 && x < SOURCE_WIDTH)
+                frame[row][x] = color;
+            if (x + w - 1 >= 0 && x + w - 1 < SOURCE_WIDTH)
+                frame[row][x + w - 1] = color;
+        }
+    }
+    return 0;
+}
+
+static int draw_line(lua_State *lua)
+{
+    int xy[4];
+    for (int i = 0; i < 4; i++) {
+        lua_Integer value = luaL_checkinteger(lua, i + 1);
+        if (value < -4096 || value > 4096)
+            return luaL_argerror(lua, i + 1, "line coordinate out of range");
+        xy[i] = (int)value;
+    }
+    int x = xy[0], y = xy[1], end_x = xy[2], end_y = xy[3];
+    int dx = abs(end_x - x), dy = -abs(end_y - y);
+    int sx = x < end_x ? 1 : -1, sy = y < end_y ? 1 : -1;
+    int error = dx + dy;
+    for (;;) {
+        if ((unsigned)x < SOURCE_WIDTH && (unsigned)y < SOURCE_HEIGHT)
+            frame[y][x] = color;
+        if (x == end_x && y == end_y)
+            break;
+        int twice = 2 * error;
+        if (twice >= dy) {
+            error += dy;
+            x += sx;
+        }
+        if (twice <= dx) {
+            error += dx;
+            y += sy;
+        }
+    }
+    return 0;
+}
+
 static int get_crank_change(lua_State *lua)
 {
     lua_pushnumber(lua, crank_change);
@@ -112,6 +165,7 @@ static void card_lua_init(lua_State *lua)
 {
     static const luaL_Reg graphics[] = {
         {"clear", clear_frame}, {"setColor", set_color}, {"fillRect", fill_rect},
+        {"drawLine", draw_line}, {"drawRect", draw_rect},
         {NULL, NULL}
     };
     static const char *names[] = {
@@ -138,16 +192,6 @@ static void card_lua_init(lua_State *lua)
     runtime_install(lua);
 }
 
-static void present(uint32_t *pixels, size_t stride, uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH])
-{
-    for (int x = 0; x < SCREEN_WIDTH; x++) {
-        uint32_t *row = pixels + x * stride;
-        for (int y = 0; y < GAME_HEIGHT; y++) {
-            row[GAME_TOP + y] = picture[y * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
-        }
-    }
-}
-
 static int open_input(void)
 {
     struct sockaddr_un address = {.sun_family = AF_UNIX, .sun_path = INPUT_PATH};
@@ -166,26 +210,6 @@ static int64_t now_ms(void)
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
-
-static void show_game_controls(uint32_t *pixels, size_t stride)
-{
-    /* Menu and B sit in the black bands outside the Playdate picture. */
-    for (int x = 220; x < 298; x++)
-        for (int y = 28; y < 72; y++) {
-            int line = y - 39;
-            if (x >= 237 && x < 281 && line >= 0 && line < 24 && line % 9 < 3)
-                pixels[x * stride + y] = 0xffffff;
-        }
-    for (int y = 304; y < 349; y++)
-        for (int x = 220; x < 298; x++) {
-            int cx = (x - 246) / 4;
-            int cy = (y - 313) / 4;
-            static const unsigned glyph[] = {6, 5, 6, 5, 6};
-            unsigned ink = x >= 246 && cx < 3 && y >= 313 && cy < 5 &&
-                           (glyph[cy] & (4u >> cx));
-            pixels[x * stride + y] = ink ? 0xffffff : 0;
-        }
 }
 
 static unsigned key_mask(int key)
@@ -221,24 +245,77 @@ static void report_run(unsigned frames, int64_t work, int64_t peak)
     fclose(log);
 }
 
-static void clear_screen(uint32_t *pixels, size_t stride)
+typedef struct {
+    int fd;
+    uint32_t *mapping;
+    size_t stride;
+    struct fb_var_screeninfo var;
+    unsigned visible;
+    unsigned page_rows;
+    int portrait;
+    int can_pan;
+} Display;
+
+static uint32_t screen_color(uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH],
+                             int x, int y, int game)
 {
-    for (int x = 0; x < SCREEN_WIDTH; x++)
-        memset(pixels + x * stride, 0, SCREEN_HEIGHT * sizeof *pixels);
+    if (y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
+        return picture[(y - GAME_TOP) * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
+    if (game && x >= 237 && x < 281 && y >= 39 && y < 63 && (y - 39) % 9 < 3)
+        return 0xffffff;
+    if (game && x >= 246 && x < 258 && y >= 313 && y < 333) {
+        static const unsigned glyph[] = {6, 5, 6, 5, 6};
+        if (glyph[(y - 313) / 4] & (4u >> ((x - 246) / 4)))
+            return 0xffffff;
+    }
+    return 0;
 }
 
-typedef struct {
-    uint32_t *pixels;
-    size_t stride;
-} BrowserScreen;
+static void display_frame(Display *display, uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH], int game)
+{
+    size_t stride = display->stride;
+    unsigned page = display->can_pan ? display->page_rows - display->visible : display->visible;
+    uint32_t *pixels = display->mapping + page * stride;
+    unsigned columns = display->portrait ? SCREEN_WIDTH : SCREEN_HEIGHT;
+    for (unsigned row = 0; row < display->page_rows; row++) {
+        uint32_t *line = pixels + row * stride;
+        for (unsigned col = 0; col < columns; col++)
+            line[col] = 0xff000000u | screen_color(picture,
+                display->portrait ? col : row, display->portrait ? row : col, game);
+    }
+    if (!display->can_pan)
+        return;
+
+    struct fb_var_screeninfo next = display->var;
+    next.yoffset = page;
+    if (ioctl(display->fd, FBIOPAN_DISPLAY, &next) == 0) {
+        display->visible = page;
+    } else {
+        display->can_pan = 0;
+        uint32_t *visible = display->mapping + display->visible * stride;
+        for (unsigned row = 0; row < display->page_rows; row++)
+            memcpy(visible + row * stride, pixels + row * stride, columns * sizeof *pixels);
+    }
+}
 
 static void present_browser(void *context, uint8_t picture[PICKER_HEIGHT][PICKER_WIDTH])
 {
-    BrowserScreen *screen = context;
-    present(screen->pixels, screen->stride, picture);
+    display_frame(context, picture, 0);
 }
 
-static int run_library(int fd, uint32_t *pixels, size_t stride)
+static int update_game(lua_State *lua)
+{
+    lua_getglobal(lua, "playdate");
+    if (!lua_istable(lua, -1))
+        return luaL_error(lua, "game replaced the playdate table");
+    lua_getfield(lua, -1, "update");
+    if (!lua_isfunction(lua, -1))
+        return luaL_error(lua, "game did not define playdate.update");
+    lua_call(lua, 0, 0);
+    return 0;
+}
+
+static int run_library(int fd, Display *display)
 {
     static uint8_t menu_frame[SOURCE_HEIGHT][SOURCE_WIDTH];
     Picker picker = {0};
@@ -249,15 +326,13 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
     int64_t back_since = -1;
     unsigned frames = 0;
     int64_t work = 0, peak = 0;
-    clear_screen(pixels, stride);
 
     for (;;) {
         int64_t start = now_ms();
         if (back_since >= 0 && start - back_since >= 700)
             break;
         if (lua && !menu) {
-            lua_getglobal(lua, "playdate");
-            lua_getfield(lua, -1, "update");
+            lua_pushcfunction(lua, update_game);
             if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
                 const char *message = lua_tostring(lua, -1);
                 snprintf(error, sizeof error, "%s", message ? message : "Lua update failed");
@@ -265,12 +340,9 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                 runtime_silence();
                 lua_close(lua);
                 lua = NULL;
-                clear_screen(pixels, stride);
             } else {
-                lua_pop(lua, 1);
                 runtime_tick();
-                present(pixels, stride, frame);
-                show_game_controls(pixels, stride);
+                display_frame(display, frame, 1);
                 int64_t elapsed = now_ms() - start;
                 work += elapsed;
                 if (elapsed > peak)
@@ -281,7 +353,7 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
         }
         if (!lua || menu) {
             picker_draw(&picker, menu_frame, error, menu);
-            present(pixels, stride, menu_frame);
+            display_frame(display, menu_frame, 0);
         }
 
         int launch = 0, library = 0, quit = 0, get_games = 0;
@@ -366,7 +438,6 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                     runtime_silence();
                     physical = touch = pressed = released = 0;
                     crank_change = 0;
-                    clear_screen(pixels, stride);
                 }
             } else if (type == 'd') {
                 touch_start = x;
@@ -400,11 +471,9 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
             lua_close(lua);
             lua = NULL;
             menu = 0;
-            clear_screen(pixels, stride);
         }
         if (get_games) {
-            BrowserScreen screen = {pixels, stride};
-            itch_browse(fd, present_browser, &screen);
+            itch_browse(fd, present_browser, display);
             picker_scan(&picker);
             if (picker.selected >= picker.count)
                 picker.selected = picker.count - 1;
@@ -422,7 +491,6 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
             memset(frame, 0, sizeof frame);
             runtime_configure(path);
             lua = bundle_open(path, card_lua_init, error, sizeof error);
-            clear_screen(pixels, stride);
         }
     }
 
@@ -445,13 +513,19 @@ int card_run(void)
     struct fb_var_screeninfo var;
     struct fb_fix_screeninfo fix;
     if (ioctl(fb, FBIOGET_VSCREENINFO, &var) < 0 ||
-        ioctl(fb, FBIOGET_FSCREENINFO, &fix) < 0 ||
-        var.xres != SCREEN_HEIGHT || var.yres != SCREEN_WIDTH ||
-        var.bits_per_pixel != 32 || var.xoffset != 0 ||
+        ioctl(fb, FBIOGET_FSCREENINFO, &fix) < 0) {
+        perror("read Q2 framebuffer");
+        close(fb);
+        return 1;
+    }
+    int portrait = var.xres == SCREEN_WIDTH && var.yres == SCREEN_HEIGHT;
+    int rotated = var.xres == SCREEN_HEIGHT && var.yres == SCREEN_WIDTH;
+    if ((!portrait && !rotated) || var.bits_per_pixel != 32 || var.xoffset != 0 ||
         fix.line_length % sizeof(uint32_t) ||
-        fix.line_length < SCREEN_HEIGHT * sizeof(uint32_t) ||
-        (uint64_t)var.yoffset + SCREEN_WIDTH > fix.smem_len / fix.line_length) {
-        fprintf(stderr, "Unsupported Q2 framebuffer layout\n");
+        fix.line_length < var.xres * sizeof(uint32_t) ||
+        (uint64_t)var.yoffset + var.yres > fix.smem_len / fix.line_length) {
+        fprintf(stderr, "Unsupported Q2 framebuffer layout (%ux%u, %u bpp, stride %u)\n",
+                var.xres, var.yres, var.bits_per_pixel, fix.line_length);
         close(fb);
         return 1;
     }
@@ -466,9 +540,18 @@ int card_run(void)
     int result = 1;
     int input = open_input();
     if (input >= 0) {
-        size_t stride = fix.line_length / sizeof(uint32_t);
-        uint32_t *pixels = mapping + var.yoffset * stride;
-        result = run_library(input, pixels, stride);
+        unsigned rows = fix.smem_len / fix.line_length;
+        if (rows > var.yres_virtual)
+            rows = var.yres_virtual;
+        Display display = {
+            .fd = fb, .mapping = mapping, .stride = fix.line_length / sizeof(uint32_t),
+            .var = var, .visible = var.yoffset, .page_rows = var.yres, .portrait = portrait,
+            .can_pan = rows >= 2 * var.yres &&
+                       (var.yoffset == 0 || var.yoffset == var.yres),
+        };
+        result = run_library(input, &display);
+        if (display.visible != var.yoffset)
+            ioctl(fb, FBIOPAN_DISPLAY, &display.var);
         close(input);
         unlink(INPUT_PATH);
     } else {

@@ -6,11 +6,13 @@ An experimental Playdate compatibility project for the Shanling Q2 running Q2 Po
 
 ## Try the crank demo
 
-Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its target zlib development files, `readelf`, `zip`, Go 1.23 or newer, system CA certificates, and the Playdate SDK's `pdc` compiler:
+Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its target zlib development files, `readelf`, `zip`, Go 1.23 or newer, and system CA certificates:
 
 ```sh
-make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static PDC=/path/to/PlaydateSDK/bin/pdc
+make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static
 ```
+
+The build uses `pdc` from PATH or downloads the pinned Linux compiler from Panic with `curl` and `tar`. Run `make sdk` to fetch it separately, or pass `PDC=/path/to/PlaydateSDK/bin/pdc` to use your own SDK.
 
 Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reopen **Library → Games → Q2 Playdate**. Copy trusted, unpacked Lua bundles to `.playdate/games/<title>.pdx/` and reopen the app to refresh the library. The built-in Crank Demo is always the first card. Other cards use their folder names and generic artwork. The single-screen picker supports up to 63 user bundles.
 
@@ -25,7 +27,7 @@ Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reop
 
 The in-game menu offers Resume, Game Library, and Exit to Q2 Pod. It sits above the game picture and B sits below it. The Crank Demo doubles crank travel while A is held and resets the marker on B. Q2 Pod stops music when launching the app so it can forward the side keys. Returning to the library or exiting a game writes frame timing and peak process RSS to `.playdate/last-run.txt`.
 
-The 400 × 240 game picture scales to 320 × 192. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. Bundles that require imports, native ARM, encryption, or other Playdate APIs may fail. The picker displays the loader or Lua error and stays open.
+The 400 × 240 game picture scales to 320 × 192. The renderer uses portrait-native 320 × 375 framebuffers and also accepts the rotated 375 × 320 layout. It flips framebuffer pages when supported and writes to the visible page otherwise. Graphics support includes rectangle outlines and one-pixel lines. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. The loader resolves bundled Lua imports in `main.pdz`. Games may still require Playdate APIs that are unavailable. The current player requires an unencrypted Lua bundle. The picker displays the loader or Lua error and stays open.
 
 ## Download free games from itch.io
 
@@ -44,7 +46,7 @@ Run `make check-itch` for the host-side downloader checks.
 
 In **Save and Tone**, press Centre to advance the marker and play a note. Reopen the game to check that the marker is restored. An underline below the markers indicates a save error. Saves stay in `.playdate/saves/` and are scoped to the bundle folder name. The player supports `playdate.datastore.read/write` for nested tables, booleans, finite numbers and strings, with a 64 KiB file limit.
 
-The audio path targets the built-in headphone jack via ALSA at 48 kHz. The Lua sound API can play one square-wave voice. Bluetooth and USB audio, samples, image sprites, and imported CoreLibs are pending. The procedural sprite subset supports custom drawing and position/size changes. The timer subset supports callbacks and repeating timers advanced by `playdate.timer.updateTimers()`.
+The audio path targets the built-in headphone jack via ALSA at 48 kHz. The Lua sound API can play one square-wave voice. Bluetooth and USB audio, samples, and image sprites are pending. SDK CoreLibs can be imported when bundled, but modules that depend on missing native APIs can still fail. The procedural sprite subset supports custom drawing and position/size changes. The timer subset supports callbacks and repeating timers advanced by `playdate.timer.updateTimers()`.
 
 ## Build the Lua probe
 
@@ -54,7 +56,7 @@ On Ubuntu or WSL, install Git, Make, a C compiler, Python 3, and the zlib develo
 make check
 ```
 
-The standalone probe uses the same pinned Playdate-compatible Lua fork as Cranked to verify the bundle format and VM before integrating a fuller runtime. In headless mode the probe reads `main.pdz` from an unpacked bundle and runs its `main` Lua chunk once. It supplies an empty `playdate` table and is intended for trusted test fixtures. It does not provide the Playdate SDK APIs, load imported chunks, call the frame loop, or open the card app framebuffer.
+The standalone probe uses the same pinned Playdate-compatible Lua fork as Cranked to verify the bundle format and VM before integrating a fuller runtime. In headless mode the probe reads `main.pdz` from an unpacked bundle and runs its `main` Lua chunk once. It supplies an empty `playdate` table and supports bundled imports for trusted test fixtures. In headless mode the frame loop and card display are inactive.
 
 To build with a MIPS32 little-endian Linux compiler and its target zlib development files:
 

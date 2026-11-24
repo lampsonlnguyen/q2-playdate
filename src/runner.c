@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include "lauxlib.h"
+#include "lualib.h"
 #include "card.h"
 #include "bundle.h"
 #include "runtime.h"
@@ -20,16 +21,12 @@ static uint32_t read_le32(const unsigned char *p)
            (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-static const char *load_main(lua_State *lua, const unsigned char *pdz, size_t size)
+static const char *index_chunks(lua_State *lua, const unsigned char *pdz, size_t size)
 {
     if (size < 16 || memcmp(pdz, "Playdate PDZ", 12) != 0)
         return "invalid PDZ header";
     if (read_le32(pdz + 12) & 0x40000000u)
         return "encrypted PDZ is unsupported";
-
-    const unsigned char *chunk = NULL;
-    size_t chunk_size = 0;
-    int compressed = 0;
 
     for (size_t pos = 16; pos < size;) {
         if (size - pos < 4)
@@ -44,18 +41,28 @@ static const char *load_main(lua_State *lua, const unsigned char *pdz, size_t si
         size_t length = entry >> 8;
         if (pos > size || length > size - pos)
             return "truncated PDZ entry";
-        if ((entry & 15) == 1 && strcmp((const char *)name, "main") == 0) {
-            if (chunk)
-                return "duplicate main Lua chunk";
-            chunk = pdz + pos;
-            chunk_size = length;
-            compressed = (entry & 128) != 0;
+        if ((entry & 15) == 1) {
+            lua_getfield(lua, -1, (const char *)name);
+            int duplicate = !lua_isnil(lua, -1);
+            lua_pop(lua, 1);
+            if (duplicate)
+                return "duplicate Lua chunk";
+            lua_pushinteger(lua, (lua_Integer)(name - pdz - 4));
+            lua_setfield(lua, -2, (const char *)name);
         }
         pos += length;
     }
+    return NULL;
+}
 
-    if (!chunk)
-        return "PDZ has no main Lua chunk";
+static const char *load_chunk(lua_State *lua, const unsigned char *pdz,
+                              size_t offset, const char *name)
+{
+    uint32_t entry = read_le32(pdz + offset);
+    size_t end = offset + 4 + strlen((const char *)pdz + offset + 4);
+    const unsigned char *chunk = pdz + ((end + 4) & ~(size_t)3);
+    size_t chunk_size = entry >> 8;
+    int compressed = (entry & 128) != 0;
 
     unsigned char *decoded = NULL;
     if (compressed) {
@@ -81,11 +88,67 @@ static const char *load_main(lua_State *lua, const unsigned char *pdz, size_t si
         return "Lua chunk exceeds probe limit";
     }
 
-    int status = luaL_loadbufferx(lua, (const char *)chunk, chunk_size, "@main", "b");
+    int status = luaL_loadbufferx(lua, (const char *)chunk, chunk_size, name, "b");
     free(decoded);
     if (status != LUA_OK)
         return lua_tostring(lua, -1);
     return NULL;
+}
+
+static int import_chunk(lua_State *lua)
+{
+    size_t length;
+    const char *requested = luaL_checklstring(lua, 1, &length);
+    char name[256];
+    if (length >= sizeof name || strlen(requested) != length)
+        return luaL_error(lua, "invalid import name");
+    if (length > 4 && strcmp(requested + length - 4, ".lua") == 0)
+        length -= 4;
+    memcpy(name, requested, length);
+    name[length] = 0;
+
+    lua_getfield(lua, lua_upvalueindex(2), name);
+    if (lua_isnil(lua, -1))
+        return luaL_error(lua, "missing Lua import: %s", name);
+    size_t offset = (size_t)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+
+    lua_getfield(lua, lua_upvalueindex(3), name);
+    if (lua_toboolean(lua, -1))
+        return 0;
+    lua_pop(lua, 1);
+    lua_pushboolean(lua, 1);
+    lua_setfield(lua, lua_upvalueindex(3), name);
+
+    const char *error = load_chunk(lua, lua_touserdata(lua, lua_upvalueindex(1)), offset, name);
+    if (!error && lua_pcall(lua, 0, 0, 0) == LUA_OK)
+        return 0;
+
+    lua_pushnil(lua);
+    lua_setfield(lua, lua_upvalueindex(3), name);
+    if (error)
+        return luaL_error(lua, "%s: %s", name, error);
+    return lua_error(lua);
+}
+
+static void open_game_libraries(lua_State *lua)
+{
+    luaL_requiref(lua, "_G", luaopen_base, 1);
+    lua_pop(lua, 1);
+    const char *restricted[] = {"dofile", "loadfile", "load", "collectgarbage"};
+    for (size_t i = 0; i < sizeof restricted / sizeof *restricted; i++) {
+        lua_pushnil(lua);
+        lua_setglobal(lua, restricted[i]);
+    }
+
+    const luaL_Reg libraries[] = {
+        {LUA_MATHLIBNAME, luaopen_math}, {LUA_STRLIBNAME, luaopen_string},
+        {LUA_TABLIBNAME, luaopen_table}, {LUA_UTF8LIBNAME, luaopen_utf8},
+    };
+    for (size_t i = 0; i < sizeof libraries / sizeof *libraries; i++) {
+        luaL_requiref(lua, libraries[i].name, libraries[i].func, 1);
+        lua_pop(lua, 1);
+    }
 }
 
 static void limit_instructions(lua_State *lua, lua_Debug *debug)
@@ -122,28 +185,42 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
         return NULL;
     }
     size_t size = (size_t)info.st_size;
-    unsigned char *pdz = malloc(size);
-    if (!pdz || fread(pdz, 1, size, file) != size) {
-        snprintf(error, error_size, "Could not read main.pdz");
+    lua_State *lua = luaL_newstate();
+    if (!lua) {
         fclose(file);
-        free(pdz);
+        snprintf(error, error_size, "Could not create the Lua VM");
         return NULL;
     }
-    fclose(file);
 
-    lua_State *lua = luaL_newstate();
-    const char *problem = lua ? load_main(lua, pdz, size) : "Could not create the Lua VM";
-    free(pdz);
+    unsigned char *pdz = lua_newuserdatauv(lua, size, 0);
+    int read_ok = fread(pdz, 1, size, file) == size;
+    fclose(file);
+    lua_newtable(lua);
+    const char *problem = read_ok ? index_chunks(lua, pdz, size) : "Could not read main.pdz";
     if (!problem) {
-        lua_newtable(lua);
-        if (setup)
-            setup(lua);
-        lua_setglobal(lua, "playdate");
-        lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 100000);
-        if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
-            problem = lua_tostring(lua, -1);
-            if (!problem)
-                problem = "Lua initialization failed";
+        lua_getfield(lua, 2, "main");
+        if (lua_isnil(lua, -1))
+            problem = "PDZ has no main Lua chunk";
+        size_t main_offset = (size_t)lua_tointeger(lua, -1);
+        lua_pop(lua, 1);
+        if (!problem) {
+            open_game_libraries(lua);
+            lua_newtable(lua);
+            lua_pushboolean(lua, 1);
+            lua_setfield(lua, -2, "main");
+            lua_pushcclosure(lua, import_chunk, 3);
+            lua_setglobal(lua, "import");
+            lua_newtable(lua);
+            if (setup)
+                setup(lua);
+            lua_setglobal(lua, "playdate");
+            lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 100000);
+            problem = load_chunk(lua, pdz, main_offset, "@main");
+            if (!problem && lua_pcall(lua, 0, 0, 0) != LUA_OK) {
+                problem = lua_tostring(lua, -1);
+                if (!problem)
+                    problem = "Lua initialization failed";
+            }
         }
     }
 

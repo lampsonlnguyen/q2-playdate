@@ -1,7 +1,10 @@
 CC ?= cc
 CFLAGS ?= -O2
 HOST_CC ?= cc
-PDC ?= pdc
+PLAYDATE_SDK_VERSION := 2.7.1
+SDK_PDC := $(abspath build/playdate-sdk/bin/pdc)
+PDC ?= $(or $(shell command -v pdc),$(SDK_PDC))
+PDC_DEP = $(filter $(SDK_PDC),$(PDC))
 GO ?= go
 Q2_CA_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 BUILD ?= build/host
@@ -41,24 +44,35 @@ check: all build/luac
 
 $(BUILD)/q2-playdate-itch: $(wildcard itch/*.go) itch/go.mod itch/go.sum
 	mkdir -p $(BUILD)
-	cd itch && CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -trimpath -ldflags="-s -w" -o "$(abspath $@)" .
+	cd itch && CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -buildvcs=false -trimpath -ldflags="-s -w" -o "$(abspath $@)" .
 
 .PHONY: check-itch
 check-itch:
-	cd itch && $(GO) vet ./... && $(GO) test ./...
+	cd itch && export CGO_ENABLED=0 && $(GO) vet ./... && $(GO) test ./...
 
-card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch
+.PHONY: sdk
+sdk: $(SDK_PDC)
+
+$(SDK_PDC):
+	mkdir -p "$(dir $@)"
+	curl -fLsS "https://download.panic.com/playdate_sdk/Linux/PlaydateSDK-$(PLAYDATE_SDK_VERSION).tar.gz" -o "$@.tar.gz"
+	tar -xOf "$@.tar.gz" "PlaydateSDK-$(PLAYDATE_SDK_VERSION)/bin/pdc" > "$@.tmp"
+	chmod +x "$@.tmp"
+	mv "$@.tmp" "$@"
+	rm -f "$@.tar.gz"
+
+card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch $(PDC_DEP)
 	readelf -h $< | grep -q 'Machine:.*MIPS'
 	mkdir -p $(BUILD)/card/.playdate/games
-	cp $^ q2app LICENSE $(BUILD)/card/.playdate/
+	cp $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch q2app LICENSE $(BUILD)/card/.playdate/
 	cp $(LUA_DIR)/doc/readme.html $(BUILD)/card/.playdate/Lua-license.html
 	cp "$(Q2_CA_BUNDLE)" $(BUILD)/card/.playdate/itch-ca.pem
 	cp itch/NOTICE itch/NextUI-Itchio-Pak-LICENSE itch/COPYING $(BUILD)/card/.playdate/
-	cp "$($(GO) env GOROOT)/LICENSE" $(BUILD)/card/.playdate/Go-license.txt
-	cd itch && cp "$($(GO) list -m -f '{{.Dir}}' golang.org/x/net)/LICENSE" "$(abspath $(BUILD))/card/.playdate/x-net-license.txt"
+	cp "$$($(GO) env GOROOT)/LICENSE" $(BUILD)/card/.playdate/Go-license.txt
+	cd itch && cp "$$($(GO) list -m -f '{{.Dir}}' golang.org/x/net)/LICENSE" "$(abspath $(BUILD))/card/.playdate/x-net-license.txt"
 	cp $(TINYALSA_DIR)/LICENSE $(BUILD)/card/.playdate/TinyALSA-license.txt
-	$(PDC) demo $(BUILD)/card/.playdate/demo.pdx
-	$(PDC) demos/save-tone $(BUILD)/card/.playdate/games/Save-and-Tone.pdx
+	"$(PDC)" demo $(BUILD)/card/.playdate/demo.pdx
+	"$(PDC)" demos/save-tone $(BUILD)/card/.playdate/games/Save-and-Tone.pdx
 	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/q2-playdate-itch .playdate/itch-ca.pem .playdate/NOTICE .playdate/NextUI-Itchio-Pak-LICENSE .playdate/COPYING .playdate/Go-license.txt .playdate/x-net-license.txt .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
 
 ARM_AS ?= arm-none-eabi-as
@@ -95,9 +109,9 @@ $(BUILD)/native-probe: tests/native/probe.c Makefile $(UNICORN_BUILD)/.built
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(UNICORN_SRC)/include -static $(LDFLAGS) -o $@ $< \
 		-Wl,--start-group $(UNICORN_LIBS) -Wl,--end-group -latomic -lz -lm -pthread
 
-$(BUILD)/native.pdx/pdex.bin: tests/native/demo.s tests/native/demo.ld tests/native/pdxinfo Makefile
+$(BUILD)/native.pdx/pdex.bin: tests/native/demo.s tests/native/demo.ld tests/native/pdxinfo Makefile $(PDC_DEP)
 	mkdir -p $(BUILD)/native-input
 	$(ARM_AS) -mcpu=cortex-m7 -o $(BUILD)/native-input/demo.o tests/native/demo.s
 	$(ARM_LD) --emit-relocs -T tests/native/demo.ld -o $(BUILD)/native-input/pdex.elf $(BUILD)/native-input/demo.o
 	cp tests/native/pdxinfo $(BUILD)/native-input/
-	$(PDC) -k $(BUILD)/native-input $(BUILD)/native.pdx
+	"$(PDC)" -k $(BUILD)/native-input $(BUILD)/native.pdx
