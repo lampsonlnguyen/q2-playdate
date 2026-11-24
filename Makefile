@@ -1,0 +1,26 @@
+CC ?= cc
+CFLAGS ?= -O2
+HOST_CC ?= cc
+BUILD ?= build/host
+LUA_DIR := build/lua54
+LUA_REV := c47f7fe1f14b1c424b0835e6c4fb2df892f358e4
+LUA_SOURCES = $(filter-out $(addprefix $(LUA_DIR)/,lua.c luac.c linit.c loadlib.c loslib.c liolib.c),$(wildcard $(LUA_DIR)/*.c))
+
+.PHONY: all check
+all: $(BUILD)/q2-playdate
+
+$(LUA_DIR)/.pinned:
+	mkdir -p build
+	git clone --no-checkout https://github.com/scratchminer/lua54.git $(LUA_DIR)
+	git -C $(LUA_DIR) checkout --detach $(LUA_REV)
+	touch $@
+
+$(BUILD)/q2-playdate: src/runner.c Makefile $(LUA_DIR)/.pinned
+	mkdir -p $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) $(LDFLAGS) -o $@ src/runner.c $(LUA_SOURCES) -lm -lz
+
+build/luac: Makefile $(LUA_DIR)/.pinned
+	$(HOST_CC) -O2 -I$(LUA_DIR) -o $@ $(LUA_DIR)/luac.c $(LUA_SOURCES) -lm
+
+check: all build/luac
+	python3 tests/smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)

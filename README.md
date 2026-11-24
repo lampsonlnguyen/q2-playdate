@@ -2,7 +2,25 @@
 
 An experimental Playdate compatibility project for the Shanling Q2 running Q2 Pod. The first goal is to run a small, Lua-only Playdate demo from an unpacked `.pdx` directory as a standalone microSD app under **Library → Games**.
 
-**Status:** Source research is complete. The runtime, Q2 build, and game compatibility are pending.
+**Status:** M1 is in progress. The headless probe builds on Linux and executes the initial Lua chunk from a synthetic `.pdx` fixture. Q2 hardware validation and playable game support are pending.
+
+## Build the Lua probe
+
+On Ubuntu or WSL, install Git, Make, a C compiler, Python 3, and the zlib development headers (`zlib1g-dev`). Then run:
+
+```sh
+make check
+```
+
+The build fetches the same pinned Playdate-compatible Lua fork used by Cranked. The probe reads `main.pdz` from an unpacked bundle and runs its `main` Lua chunk once. It supplies an empty `playdate` table and is intended for trusted test fixtures. It does not provide the Playdate SDK APIs, load imported chunks, call the frame loop, or show up in the Q2 Pod game menu yet.
+
+To build with a MIPS32 little-endian Linux compiler and its target zlib development files:
+
+```sh
+make BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static
+```
+
+With QEMU user-mode installed, run the same fixtures against that build with `make check BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static RUNNER=qemu-mipsel`.
 
 ## Upstream projects
 
