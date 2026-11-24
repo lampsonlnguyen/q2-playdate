@@ -27,8 +27,17 @@
 
 enum {
     SOURCE_WIDTH = 400, SOURCE_HEIGHT = 240,
-    SCREEN_WIDTH = 320, SCREEN_HEIGHT = 375,
-    GAME_HEIGHT = 192, GAME_TOP = (SCREEN_HEIGHT - GAME_HEIGHT) / 2,
+    /* The logical screen is the firmware's 375x320 landscape frame, not
+     * the panel's 320x375 portrait framebuffer: the panel's 375 axis is
+     * horizontal, so the picture (400x240 scaled to 320x192) sits centred
+     * in the frame, with the menu button in the band above it and B in
+     * the band below it. display_frame rotates the logical screen onto
+     * the panel the way q2-boy's rotate_frame does. */
+    SCREEN_WIDTH = 375, SCREEN_HEIGHT = 320,
+    GAME_WIDTH = 320, GAME_HEIGHT = 192,
+    GAME_LEFT = (SCREEN_WIDTH - GAME_WIDTH) / 2,
+    GAME_TOP = (SCREEN_HEIGHT - GAME_HEIGHT) / 2,
+    PANEL_WIDTH = 320, PANEL_HEIGHT = 375,
     COLOR_BLACK = 0, COLOR_WHITE = 1,
     BACK_KEY = 170, PLAY_KEY = 171, CENTRE_KEY = 218,
     LEFT = 1, RIGHT = 2, UP = 4, DOWN = 8, B = 16, A = 32
@@ -259,13 +268,14 @@ typedef struct {
 static uint32_t screen_color(uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH],
                              int x, int y, int game)
 {
-    if (y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
-        return picture[(y - GAME_TOP) * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
-    if (game && x >= 237 && x < 281 && y >= 39 && y < 63 && (y - 39) % 9 < 3)
+    if (y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT &&
+        x >= GAME_LEFT && x < GAME_LEFT + GAME_WIDTH)
+        return picture[(y - GAME_TOP) * 5 / 4][(x - GAME_LEFT) * 5 / 4] ? 0 : 0xffffff;
+    if (game && x >= 39 && x < 83 && y >= 20 && y < 41 && (y - 20) % 9 < 3)
         return 0xffffff;
-    if (game && x >= 246 && x < 258 && y >= 313 && y < 333) {
+    if (game && x >= 62 && x < 74 && y >= 280 && y < 300) {
         static const unsigned glyph[] = {6, 5, 6, 5, 6};
-        if (glyph[(y - 313) / 4] & (4u >> ((x - 246) / 4)))
+        if (glyph[(y - 280) / 4] & (4u >> ((x - 62) / 4)))
             return 0xffffff;
     }
     return 0;
@@ -276,12 +286,20 @@ static void display_frame(Display *display, uint8_t picture[SOURCE_HEIGHT][SOURC
     size_t stride = display->stride;
     unsigned page = display->can_pan ? display->page_rows - display->visible : display->visible;
     uint32_t *pixels = display->mapping + page * stride;
-    unsigned columns = display->portrait ? SCREEN_WIDTH : SCREEN_HEIGHT;
-    for (unsigned row = 0; row < display->page_rows; row++) {
-        uint32_t *line = pixels + row * stride;
-        for (unsigned col = 0; col < columns; col++)
-            line[col] = 0xff000000u | screen_color(picture,
-                display->portrait ? col : row, display->portrait ? row : col, game);
+    if (display->portrait) {
+        /* The framebuffer is the 320x375 portrait panel: logical (x, y)
+         * appears at panel (row = x, col = 319 - y). */
+        for (unsigned y = 0; y < SCREEN_HEIGHT; y++)
+            for (unsigned x = 0; x < SCREEN_WIDTH; x++)
+                pixels[x * stride + (SCREEN_HEIGHT - 1 - y)] =
+                    0xff000000u | screen_color(picture, (int)x, (int)y, game);
+    } else {
+        /* The framebuffer is already the 375x320 landscape frame. */
+        for (unsigned row = 0; row < display->page_rows; row++) {
+            uint32_t *line = pixels + row * stride;
+            for (unsigned col = 0; col < SCREEN_WIDTH; col++)
+                line[col] = 0xff000000u | screen_color(picture, (int)col, (int)row, game);
+        }
     }
     if (!display->can_pan)
         return;
@@ -293,8 +311,7 @@ static void display_frame(Display *display, uint8_t picture[SOURCE_HEIGHT][SOURC
     } else {
         display->can_pan = 0;
         uint32_t *visible = display->mapping + display->visible * stride;
-        for (unsigned row = 0; row < display->page_rows; row++)
-            memcpy(visible + row * stride, pixels + row * stride, columns * sizeof *pixels);
+        memcpy(visible, pixels, display->page_rows * stride * sizeof *pixels);
     }
 }
 
@@ -428,12 +445,16 @@ static int run_library(int fd, Display *display)
             }
 
             if (sscanf(message, "t %c %d %d", &type, &value, &axis) != 3 ||
-                value < 0 || value >= SCREEN_HEIGHT || axis < 0 || axis >= SCREEN_WIDTH)
+                value < 0 || value >= SCREEN_WIDTH || axis < 0 || axis >= SCREEN_HEIGHT)
                 continue;
-            int x = SCREEN_WIDTH - 1 - axis, y = value;
+            /* Touch arrives as "t <type> <value> <axis>" with (value, axis)
+             * = (frame column, frame row), and the logical screen is the
+             * 375x320 frame, so x is the frame column and y the frame row. */
+            int x = value, y = axis;
             if (lua && !menu) {
-                set_buttons(&touch, type != 'u' && x >= 220 && y >= 304 ? B : 0);
-                if (type == 'u' && x >= 220 && y >= 28 && y < 72) {
+                set_buttons(&touch, type != 'u' && x >= 62 && x < 74 &&
+                            y >= 280 && y < 300 ? B : 0);
+                if (type == 'u' && x >= 39 && x < 83 && y >= 20 && y < 41) {
                     menu = 1;
                     runtime_silence();
                     physical = touch = pressed = released = 0;
@@ -445,6 +466,7 @@ static int run_library(int fd, Display *display)
                 int dx = x - touch_start;
                 touch_start = -1;
                 int logical_y = (y - GAME_TOP) * 5 / 4;
+                int px = x - GAME_LEFT;
                 if (menu) {
                     if (logical_y >= 64 && logical_y < 100)
                         menu = 0;
@@ -454,13 +476,13 @@ static int run_library(int fd, Display *display)
                         quit = 1;
                 } else if (!error[0] && (dx < -30 || dx > 30)) {
                     move_selection(&picker, dx < 0 ? 1 : -1);
-                } else if (!error[0] && logical_y >= 205 && logical_y < 240 && x < 145) {
+                } else if (!error[0] && logical_y >= 205 && logical_y < 240 && px < 145) {
                     get_games = 1;
                 } else if (!error[0] && logical_y >= 42 && logical_y < 170) {
-                    if (x >= 107 && x < 214)
+                    if (px >= 107 && px < 214)
                         launch = 1;
                     else
-                        move_selection(&picker, x < 107 ? -1 : 1);
+                        move_selection(&picker, px < 107 ? -1 : 1);
                 }
             }
         }
@@ -518,8 +540,8 @@ int card_run(void)
         close(fb);
         return 1;
     }
-    int portrait = var.xres == SCREEN_WIDTH && var.yres == SCREEN_HEIGHT;
-    int rotated = var.xres == SCREEN_HEIGHT && var.yres == SCREEN_WIDTH;
+    int portrait = var.xres == PANEL_WIDTH && var.yres == PANEL_HEIGHT;
+    int rotated = var.xres == SCREEN_WIDTH && var.yres == SCREEN_HEIGHT;
     if ((!portrait && !rotated) || var.bits_per_pixel != 32 || var.xoffset != 0 ||
         fix.line_length % sizeof(uint32_t) ||
         fix.line_length < var.xres * sizeof(uint32_t) ||
