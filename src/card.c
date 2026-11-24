@@ -27,8 +27,7 @@
 
 enum {
     SOURCE_WIDTH = 400, SOURCE_HEIGHT = 240,
-    SCREEN_WIDTH = 320, SCREEN_HEIGHT = 375,
-    GAME_HEIGHT = 192, GAME_TOP = (SCREEN_HEIGHT - GAME_HEIGHT) / 2,
+    MENU_Y = GAME_TOP / 2 - 12, B_Y = GAME_TOP + GAME_HEIGHT + GAME_TOP / 2 - 10,
     COLOR_BLACK = 0, COLOR_WHITE = 1,
     BACK_KEY = 170, PLAY_KEY = 171, CENTRE_KEY = 218,
     LEFT = 1, RIGHT = 2, UP = 4, DOWN = 8, B = 16, A = 32
@@ -259,13 +258,14 @@ typedef struct {
 static uint32_t screen_color(uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH],
                              int x, int y, int game)
 {
-    if (y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
+    x -= GAME_LEFT;
+    if (x >= 0 && x < GAME_WIDTH && y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
         return picture[(y - GAME_TOP) * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
-    if (game && x >= 237 && x < 281 && y >= 39 && y < 63 && (y - 39) % 9 < 3)
+    if (game && x >= 237 && x < 281 && y >= MENU_Y && y < MENU_Y + 24 && (y - MENU_Y) % 9 < 3)
         return 0xffffff;
-    if (game && x >= 246 && x < 258 && y >= 313 && y < 333) {
+    if (game && x >= 246 && x < 258 && y >= B_Y && y < B_Y + 20) {
         static const unsigned glyph[] = {6, 5, 6, 5, 6};
-        if (glyph[(y - 313) / 4] & (4u >> ((x - 246) / 4)))
+        if (glyph[(y - B_Y) / 4] & (4u >> ((x - 246) / 4)))
             return 0xffffff;
     }
     return 0;
@@ -276,12 +276,12 @@ static void display_frame(Display *display, uint8_t picture[SOURCE_HEIGHT][SOURC
     size_t stride = display->stride;
     unsigned page = display->can_pan ? display->page_rows - display->visible : display->visible;
     uint32_t *pixels = display->mapping + page * stride;
-    unsigned columns = display->portrait ? SCREEN_WIDTH : SCREEN_HEIGHT;
+    unsigned columns = display->var.xres;
     for (unsigned row = 0; row < display->page_rows; row++) {
         uint32_t *line = pixels + row * stride;
         for (unsigned col = 0; col < columns; col++)
             line[col] = 0xff000000u | screen_color(picture,
-                display->portrait ? col : row, display->portrait ? row : col, game);
+                display->portrait ? row : col, display->portrait ? SCREEN_HEIGHT - 1 - col : row, game);
     }
     if (!display->can_pan)
         return;
@@ -428,19 +428,19 @@ static int run_library(int fd, Display *display)
             }
 
             if (sscanf(message, "t %c %d %d", &type, &value, &axis) != 3 ||
-                value < 0 || value >= SCREEN_HEIGHT || axis < 0 || axis >= SCREEN_WIDTH)
+                value < 0 || value >= SCREEN_WIDTH || axis < 0 || axis >= SCREEN_HEIGHT)
                 continue;
-            int x = SCREEN_WIDTH - 1 - axis, y = value;
+            int x = value - GAME_LEFT, y = axis;
             if (lua && !menu) {
-                set_buttons(&touch, type != 'u' && x >= 220 && y >= 304 ? B : 0);
-                if (type == 'u' && x >= 220 && y >= 28 && y < 72) {
+                set_buttons(&touch, type != 'u' && x >= 220 && x < GAME_WIDTH && y >= B_Y - 10 ? B : 0);
+                if (type == 'u' && x >= 220 && x < GAME_WIDTH && y >= MENU_Y - 10 && y < MENU_Y + 34) {
                     menu = 1;
                     runtime_silence();
                     physical = touch = pressed = released = 0;
                     crank_change = 0;
                 }
             } else if (type == 'd') {
-                touch_start = x;
+                touch_start = x >= 0 && x < GAME_WIDTH ? x : -1;
             } else if (type == 'u' && touch_start >= 0) {
                 int dx = x - touch_start;
                 touch_start = -1;
@@ -518,9 +518,9 @@ int card_run(void)
         close(fb);
         return 1;
     }
-    int portrait = var.xres == SCREEN_WIDTH && var.yres == SCREEN_HEIGHT;
-    int rotated = var.xres == SCREEN_HEIGHT && var.yres == SCREEN_WIDTH;
-    if ((!portrait && !rotated) || var.bits_per_pixel != 32 || var.xoffset != 0 ||
+    int portrait = var.xres == SCREEN_HEIGHT && var.yres == SCREEN_WIDTH;
+    int landscape = var.xres == SCREEN_WIDTH && var.yres == SCREEN_HEIGHT;
+    if ((!portrait && !landscape) || var.bits_per_pixel != 32 || var.xoffset != 0 ||
         fix.line_length % sizeof(uint32_t) ||
         fix.line_length < var.xres * sizeof(uint32_t) ||
         (uint64_t)var.yoffset + var.yres > fix.smem_len / fix.line_length) {

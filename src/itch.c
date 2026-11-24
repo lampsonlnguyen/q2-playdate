@@ -238,8 +238,11 @@ void itch_browse(int input, ItchPresent present, void *context)
                 browser.wheel -= direction * 26;
             }
         } else if (!browser.pid && sscanf(packet, "t u %d %d", &pos, &axis) == 2 &&
-                   pos >= 115 && pos < 244 && axis >= 0 && axis < 320) {
-            int y = (pos - 91) * 5 / 4;
+                   pos >= GAME_LEFT && pos < GAME_LEFT + GAME_WIDTH &&
+                   axis >= GAME_TOP && axis < GAME_TOP + GAME_HEIGHT) {
+            int y = (axis - GAME_TOP) * 5 / 4;
+            if (y < 30)
+                continue;
             int row = (y - 30) / ROW_HEIGHT;
             int item = browser.selected / ROWS * ROWS + row;
             if (row >= 0 && row < ROWS && item < row_count(&browser)) {
