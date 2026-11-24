@@ -2,7 +2,19 @@
 
 An experimental Playdate compatibility project for the Shanling Q2 running Q2 Pod. The first goal is to run a small, Lua-only Playdate demo from an unpacked `.pdx` directory as a standalone microSD app under **Library → Games**.
 
-**Status:** M1 is in progress. The headless probe runs on Linux and as a static MIPS32 little-endian binary under `qemu-mipsel`. Both builds passed the synthetic smoke tests and executed a minimal `.pdx` compiled with Playdate SDK 2.7.1. Physical Q2 validation and playable game support are pending.
+**Status:** M2 has an experimental microSD demo. The Lua loader has passed desktop and MIPS32 emulation tests. Physical Q2 testing is pending.
+
+## Try the crank demo
+
+Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its target zlib development files, `readelf`, `zip`, and the Playdate SDK's `pdc` compiler:
+
+```sh
+make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static PDC=/path/to/PlaydateSDK/bin/pdc
+```
+
+Extract `build/mipsel/q2-playdate-card.zip` to the microSD root so `.playdate/q2app`, `.playdate/q2-playdate`, and `.playdate/demo.pdx` are directly inside the hidden app folder. On Q2 Pod, reopen **Library → Games** and select **Q2 Playdate**. Spin the wheel to move the marker and press Back to exit. After a clean Back exit, `.playdate/last-run.txt` records frame count, update/render timings, and peak process RSS.
+
+The bundled demo uses a small set of Lua APIs for drawing rectangles and reading crank movement. The 400 × 240 image scales to 320 × 192 and is centered on the Q2 display.
 
 ## Build the Lua probe
 
@@ -12,7 +24,7 @@ On Ubuntu or WSL, install Git, Make, a C compiler, Python 3, and the zlib develo
 make check
 ```
 
-The standalone probe uses the same pinned Playdate-compatible Lua fork as Cranked to verify the bundle format and VM before integrating a fuller runtime. The probe reads `main.pdz` from an unpacked bundle and runs its `main` Lua chunk once. It supplies an empty `playdate` table and is intended for trusted test fixtures. It does not provide the Playdate SDK APIs, load imported chunks, call the frame loop, or show up in the Q2 Pod game menu yet.
+The standalone probe uses the same pinned Playdate-compatible Lua fork as Cranked to verify the bundle format and VM before integrating a fuller runtime. In headless mode the probe reads `main.pdz` from an unpacked bundle and runs its `main` Lua chunk once. It supplies an empty `playdate` table and is intended for trusted test fixtures. It does not provide the Playdate SDK APIs, load imported chunks, call the frame loop, or open the card app framebuffer.
 
 To build with a MIPS32 little-endian Linux compiler and its target zlib development files:
 

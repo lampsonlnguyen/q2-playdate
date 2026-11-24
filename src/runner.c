@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include "lauxlib.h"
+#include "card.h"
 
 enum { MAX_PDZ = 8 * 1024 * 1024, MAX_CHUNK = 2 * 1024 * 1024 };
 
@@ -93,13 +94,14 @@ static void limit_instructions(lua_State *lua, lua_Debug *debug)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
+    if (argc > 2) {
         fprintf(stderr, "usage: %s path/to/game.pdx\n", argv[0]);
         return EXIT_FAILURE;
     }
 
+    const char *bundle = argc == 1 ? CARD_BUNDLE : argv[1];
     char path[4096];
-    int length = snprintf(path, sizeof(path), "%s/pdex.bin", argv[1]);
+    int length = snprintf(path, sizeof(path), "%s/pdex.bin", bundle);
     if (length < 0 || (size_t)length >= sizeof(path)) {
         fprintf(stderr, "bundle path is too long\n");
         return EXIT_FAILURE;
@@ -110,7 +112,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    snprintf(path, sizeof(path), "%s/main.pdz", argv[1]);
+    snprintf(path, sizeof(path), "%s/main.pdz", bundle);
     FILE *file = fopen(path, "rb");
     if (!file) {
         perror(path);
@@ -143,6 +145,8 @@ int main(int argc, char **argv)
     free(pdz);
     if (!error) {
         lua_newtable(lua);
+        if (argc == 1)
+            card_lua_init(lua);
         lua_setglobal(lua, "playdate");
         lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 100000);
         if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
@@ -152,11 +156,15 @@ int main(int argc, char **argv)
         }
     }
 
-    if (error)
+    int result = EXIT_FAILURE;
+    if (error) {
         fprintf(stderr, "%s\n", error);
-    else
+    } else if (argc == 1) {
+        result = card_run(lua);
+    } else {
         puts("Executed main Lua chunk");
-    int result = error ? EXIT_FAILURE : EXIT_SUCCESS;
+        result = EXIT_SUCCESS;
+    }
     lua_close(lua);
     return result;
 }
