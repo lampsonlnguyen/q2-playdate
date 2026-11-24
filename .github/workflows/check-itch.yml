@@ -12,8 +12,5 @@ jobs:
           go-version-file: itch/go.mod
           cache-dependency-path: itch/go.sum
       - run: make check-itch
-      - run: make build/mipsel/q2-playdate-itch
-      - run: |
-          git clone https://github.com/scratchminer/lua54.git /tmp/q2-lua
-          git -C /tmp/q2-lua checkout c47f7fe1f14b1c424b0835e6c4fb2df892f358e4
-          cc -Wall -Wextra -Werror -I/tmp/q2-lua -fsyntax-only src/itch.c src/card.c src/picker.c
+      - run: make BUILD=build/mipsel build/mipsel/q2-playdate-itch
+      - run: make check CFLAGS="-O2 -Wall"
