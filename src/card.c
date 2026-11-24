@@ -3,6 +3,7 @@
 #include "card.h"
 #include "bundle.h"
 #include "picker.h"
+#include "itch.h"
 #include "runtime.h"
 #include "lauxlib.h"
 
@@ -226,6 +227,17 @@ static void clear_screen(uint32_t *pixels, size_t stride)
         memset(pixels + x * stride, 0, SCREEN_HEIGHT * sizeof *pixels);
 }
 
+typedef struct {
+    uint32_t *pixels;
+    size_t stride;
+} BrowserScreen;
+
+static void present_browser(void *context, uint8_t picture[PICKER_HEIGHT][PICKER_WIDTH])
+{
+    BrowserScreen *screen = context;
+    present(screen->pixels, screen->stride, picture);
+}
+
 static int run_library(int fd, uint32_t *pixels, size_t stride)
 {
     static uint8_t menu_frame[SOURCE_HEIGHT][SOURCE_WIDTH];
@@ -272,8 +284,8 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
             present(pixels, stride, menu_frame);
         }
 
-        int launch = 0, library = 0, quit = 0;
-        while (now_ms() < start + 33 && !launch && !library && !quit) {
+        int launch = 0, library = 0, quit = 0, get_games = 0;
+        while (now_ms() < start + 33 && !launch && !library && !quit && !get_games) {
             struct pollfd input = {.fd = fd, .events = POLLIN};
             int64_t remaining = start + 33 - now_ms();
             int ready = poll(&input, 1, remaining > 0 ? (int)remaining : 0);
@@ -335,6 +347,8 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                         quit = 1;
                     if (value == CENTRE_KEY)
                         launch = 1;
+                    if (value == PLAY_KEY)
+                        get_games = 1;
                     if (bit == LEFT || bit == RIGHT)
                         move_selection(&picker, bit == LEFT ? -1 : 1);
                 }
@@ -369,6 +383,8 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                         quit = 1;
                 } else if (!error[0] && (dx < -30 || dx > 30)) {
                     move_selection(&picker, dx < 0 ? 1 : -1);
+                } else if (!error[0] && logical_y >= 205 && logical_y < 240 && x < 145) {
+                    get_games = 1;
                 } else if (!error[0] && logical_y >= 42 && logical_y < 170) {
                     if (x >= 107 && x < 214)
                         launch = 1;
@@ -385,6 +401,15 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
             lua = NULL;
             menu = 0;
             clear_screen(pixels, stride);
+        }
+        if (get_games) {
+            BrowserScreen screen = {pixels, stride};
+            itch_browse(fd, present_browser, &screen);
+            picker_scan(&picker);
+            if (picker.selected >= picker.count)
+                picker.selected = picker.count - 1;
+            wheel = 0;
+            back_since = -1;
         }
         if (launch) {
             char path[512];

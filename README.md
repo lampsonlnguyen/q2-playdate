@@ -6,7 +6,7 @@ An experimental Playdate compatibility project for the Shanling Q2 running Q2 Po
 
 ## Try the crank demo
 
-Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its target zlib development files, `readelf`, `zip`, and the Playdate SDK's `pdc` compiler:
+Build the card ZIP using a MIPS32 little-endian Linux cross-compiler with its target zlib development files, `readelf`, `zip`, Go 1.23 or newer, system CA certificates, and the Playdate SDK's `pdc` compiler:
 
 ```sh
 make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc LDFLAGS=-static PDC=/path/to/PlaydateSDK/bin/pdc
@@ -18,7 +18,7 @@ Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reop
 | --- | --- | --- |
 | Wheel | Browse covers | Crank |
 | Previous / Next | Browse covers | Left / Right |
-| Return / Play-Pause | Exit / — | Up / Down |
+| Return / Play-Pause | Exit / Get Games | Up / Down |
 | Centre | Open selected game | A |
 | Touch | Swipe, tap side covers, or tap the centre cover to play | B or menu |
 | Hold Return | Exit | Exit |
@@ -26,6 +26,14 @@ Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reop
 The in-game menu offers Resume, Game Library, and Exit to Q2 Pod. It sits above the game picture and B sits below it. The Crank Demo doubles crank travel while A is held and resets the marker on B. Q2 Pod stops music when launching the app so it can forward the side keys. Returning to the library or exiting a game writes frame timing and peak process RSS to `.playdate/last-run.txt`.
 
 The 400 × 240 game picture scales to 320 × 192. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. Bundles that require imports, native ARM, encryption, or other Playdate APIs may fail. The picker displays the loader or Lua error and stays open.
+
+## Download free games from itch.io
+
+Connect the Q2 to Wi-Fi. In the game library, press **Play/Pause** or tap **Get Games** to open itch.io's free Playdate catalog. Browse with the wheel or Previous/Next, press **Centre** to download, and press **Return** to go back or cancel. The library refreshes when you return.
+
+The downloader accepts guest-accessible ZIPs containing one unpacked Lua bundle with `main.pdz`. It skips paid downloads, ARM binaries and encrypted bundles. A downloaded game may still require Playdate APIs the player does not implement. Only launch games from creators you trust. Downloads are staged on the microSD card, with a 48 MiB download and 64 MiB unpacked limit. Existing installs are preserved. The helper uses the packaged TLS trust bundle, which can be supplied at build time with `Q2_CA_BUNDLE`.
+
+Run `make check-itch` for the host-side downloader checks.
 
 ## M4 compatibility
 

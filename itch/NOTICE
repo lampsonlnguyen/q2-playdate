@@ -1,0 +1,8 @@
+The helper's itch.io guest flow and catalog parsing are adapted from
+https://github.com/lampsonlnguyen/q2-pico8/tree/main/src/itch-helper (GPL-2.0-or-later).
+That code credits Pocket Boy (https://github.com/SlayTheEarth/q2-boy) and
+NextUI-Itchio-Pak. The original MIT notice is distributed beside this file.
+The adapted helper is distributed under GPL version 3 or later. The separate Q2 Playdate executable communicates with the helper through
+its command-line arguments and stdout.
+
+Helper source: https://github.com/lampsonlnguyen/q2-playdate/tree/main/itch

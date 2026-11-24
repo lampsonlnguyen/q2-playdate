@@ -15,3 +15,6 @@ void picker_scan(Picker *picker);
 void picker_path(const Picker *picker, char *path, size_t size);
 void picker_draw(const Picker *picker, uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
                  const char *error, int menu);
+
+void picker_label(uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
+                  int x, int y, const char *text, size_t limit, int ink);

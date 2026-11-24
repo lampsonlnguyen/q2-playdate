@@ -2,6 +2,8 @@ CC ?= cc
 CFLAGS ?= -O2
 HOST_CC ?= cc
 PDC ?= pdc
+GO ?= go
+Q2_CA_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 BUILD ?= build/host
 LUA_DIR := build/lua54
 LUA_REV := c47f7fe1f14b1c424b0835e6c4fb2df892f358e4
@@ -26,9 +28,9 @@ $(TINYALSA_DIR)/.pinned:
 	git -C $(TINYALSA_DIR) checkout --detach $(TINYALSA_REV)
 	touch $@
 
-$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/picker.c src/picker.h src/runtime.c src/runtime.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
+$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
 	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/picker.c src/runtime.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
 
 build/luac: Makefile $(LUA_DIR)/.pinned
 	$(HOST_CC) -O2 -I$(LUA_DIR) -o $@ $(LUA_DIR)/luac.c $(LUA_SOURCES) -lm
@@ -37,15 +39,27 @@ check: all build/luac
 	python3 tests/smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
 
 
-card: $(BUILD)/q2-playdate
+$(BUILD)/q2-playdate-itch: $(wildcard itch/*.go) itch/go.mod itch/go.sum
+	mkdir -p $(BUILD)
+	cd itch && CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -trimpath -ldflags="-s -w" -o "$(abspath $@)" .
+
+.PHONY: check-itch
+check-itch:
+	cd itch && $(GO) vet ./... && $(GO) test ./...
+
+card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch
 	readelf -h $< | grep -q 'Machine:.*MIPS'
 	mkdir -p $(BUILD)/card/.playdate/games
-	cp $< q2app LICENSE $(BUILD)/card/.playdate/
+	cp $^ q2app LICENSE $(BUILD)/card/.playdate/
 	cp $(LUA_DIR)/doc/readme.html $(BUILD)/card/.playdate/Lua-license.html
+	cp "$(Q2_CA_BUNDLE)" $(BUILD)/card/.playdate/itch-ca.pem
+	cp itch/NOTICE itch/NextUI-Itchio-Pak-LICENSE itch/COPYING $(BUILD)/card/.playdate/
+	cp "$($(GO) env GOROOT)/LICENSE" $(BUILD)/card/.playdate/Go-license.txt
+	cd itch && cp "$($(GO) list -m -f '{{.Dir}}' golang.org/x/net)/LICENSE" "$(abspath $(BUILD))/card/.playdate/x-net-license.txt"
 	cp $(TINYALSA_DIR)/LICENSE $(BUILD)/card/.playdate/TinyALSA-license.txt
 	$(PDC) demo $(BUILD)/card/.playdate/demo.pdx
 	$(PDC) demos/save-tone $(BUILD)/card/.playdate/games/Save-and-Tone.pdx
-	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
+	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/q2-playdate-itch .playdate/itch-ca.pem .playdate/NOTICE .playdate/NextUI-Itchio-Pak-LICENSE .playdate/COPYING .playdate/Go-license.txt .playdate/x-net-license.txt .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
 
 ARM_AS ?= arm-none-eabi-as
 ARM_LD ?= arm-none-eabi-ld

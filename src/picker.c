@@ -52,7 +52,7 @@ static void rect(uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
         memset(&frame[row][x], ink, width);
 }
 
-static void label(uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
+void picker_label(uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
                   int x, int y, const char *text, size_t limit, int ink)
 {
     static const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.:/?";
@@ -81,7 +81,7 @@ static void cover(uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH],
     rect(frame, x, y, width, height, 1);
     rect(frame, x + 2, y + 2, width - 4, height - 4, 0);
     rect(frame, x + 10, y + 10, width - 20, height - 30, 1);
-    label(frame, x + width / 2 - 15, y + height / 2 - 12, "PDX", 3, 0);
+    picker_label(frame, x + width / 2 - 15, y + height / 2 - 12, "PDX", 3, 0);
     if (selected)
         rect(frame, x + width / 2 - 12, y + height - 12, 24, 3, 1);
 }
@@ -90,20 +90,20 @@ void picker_draw(const Picker *picker, uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH
                  const char *error, int menu)
 {
     memset(frame, 0, PICKER_HEIGHT * PICKER_WIDTH);
-    label(frame, 16, 14, error[0] ? "CANNOT RUN GAME" : "Q2 PLAYDATE", 46, 1);
+    picker_label(frame, 16, 14, error[0] ? "CANNOT RUN GAME" : "Q2 PLAYDATE", 46, 1);
     if (error[0]) {
         size_t length = strlen(error);
         for (size_t offset = 0; offset < 184 && offset < length; offset += 46)
-            label(frame, 16, 52 + (int)(offset / 46) * 20, error + offset, 46, 1);
-        label(frame, 16, 216, "BACK OR CENTRE TO DISMISS", 46, 1);
+            picker_label(frame, 16, 52 + (int)(offset / 46) * 20, error + offset, 46, 1);
+        picker_label(frame, 16, 216, "BACK OR CENTRE TO DISMISS", 46, 1);
         return;
     }
 
     if (menu) {
-        label(frame, 120, 75, "RESUME", 22, 1);
-        label(frame, 120, 115, "GAME LIBRARY", 22, 1);
-        label(frame, 120, 155, "EXIT TO Q2 POD", 22, 1);
-        label(frame, 16, 216, "CENTRE LIBRARY  BACK RESUME", 46, 1);
+        picker_label(frame, 120, 75, "RESUME", 22, 1);
+        picker_label(frame, 120, 115, "GAME LIBRARY", 22, 1);
+        picker_label(frame, 120, 155, "EXIT TO Q2 POD", 22, 1);
+        picker_label(frame, 16, 216, "CENTRE LIBRARY  BACK RESUME", 46, 1);
         return;
     }
 
@@ -117,6 +117,6 @@ void picker_draw(const Picker *picker, uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH
     size_t length = strlen(name) - (picker->selected ? 4 : 0);
     if (length > 46)
         length = 46;
-    label(frame, 200 - 4 * (int)length, 186, name, length, 1);
-    label(frame, 16, 216, "WHEEL BROWSE  CENTRE PLAY  BACK EXIT", 46, 1);
+    picker_label(frame, 200 - 4 * (int)length, 186, name, length, 1);
+    picker_label(frame, 16, 216, "PLAY: GET GAMES     CENTRE: OPEN", 46, 1);
 }
