@@ -1,12 +1,14 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <inttypes.h>
+#include <libgen.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 #include <unicorn/arm.h>
 #include <unicorn/unicorn.h>
 #include <zlib.h>
@@ -89,17 +91,12 @@ static int call_fixture(uc_engine *engine, uint32_t entry, uint32_t event, uint3
     return 1;
 }
 
-int main(int argc, char **argv)
+static int run_probe(const char *path)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s path/to/pdex.bin\n", argv[0]);
-        return EXIT_FAILURE;
-    }
-
     static unsigned char image[MAX_IMAGE];
     size_t size;
     uint32_t entry;
-    if (!load_fixture(argv[1], image, &size, &entry)) {
+    if (!load_fixture(path, image, &size, &entry)) {
         fprintf(stderr, "Unsupported or invalid native probe binary\n");
         return EXIT_FAILURE;
     }
@@ -145,5 +142,28 @@ int main(int argc, char **argv)
 
 done:
     uc_close(engine);
+    return result;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2)
+        return run_probe(argv[1]);
+    if (argc != 1) {
+        fprintf(stderr, "usage: %s [path/to/pdex.bin]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    /* Q2 Pod passes the full path of the executable, with no arguments. */
+    if (chdir(dirname(argv[0])) != 0 ||
+        !freopen("../playdate-native-report.txt", "w", stdout) ||
+        dup2(STDOUT_FILENO, STDERR_FILENO) == -1)
+        return EXIT_FAILURE;
+    puts("Q2 Playdate native ARM benchmark started");
+    fflush(stdout);
+    int result = run_probe("pdex.bin");
+    puts(result == EXIT_SUCCESS ? "Result: PASS" : "Result: FAIL");
+    if (fclose(stdout) == EOF)
+        return EXIT_FAILURE;
     return result;
 }

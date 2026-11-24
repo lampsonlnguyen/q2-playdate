@@ -84,7 +84,7 @@ make check-native BUILD=build/mipsel CC=mipsel-linux-gnu-gcc \
     PDC=/path/to/PlaydateSDK/bin/pdc RUNNER='qemu-mipsel -cpu XBurstR2'
 ```
 
-For physical testing, the same build produces `build/mipsel/native-probe` and `build/mipsel/native.pdx/pdex.bin`. Copy both to the Q2 and run the probe with the path to the binary from a device shell. The probe is a terminal tool and is separate from the Games card package.
+To build the hardware test ZIP, run the same command with `native-card` in place of `check-native`. Extract `build/mipsel/q2-playdate-native-probe.zip` to the microSD root, keeping the hidden `.pdprobe` directory. On the Q2, open **Library → Games → Playdate ARM Probe** and press **Centre**. The benchmark runs once and returns to Games. Open `playdate-native-report.txt` at the card root to see the timings, peak RSS, and final PASS or FAIL. Each launch replaces the report. A report containing only the start line indicates the probe did not finish. The Lua player and this optional diagnostic install independently.
 
 The proof covers ARM execution only. The fixture has no relocations, BSS, API calls or graphics. The regular card app still supports Lua bundles. Native game support will need a general loader, the Playdate C API bridge, and measurements on the device.
 
@@ -95,7 +95,7 @@ The proof covers ARM execution only. The fixture has no relocations, BSS, API ca
 - [ ] **M2 — First playable demo.** Package the runtime as a Q2 Pod card app. Render the Playdate's 400 × 240 frame at 320 × 192, map wheel deltas to crank rotation, and test a demo that uses sprites and the crank. Record frame time and peak RSS on a physical Q2 and verify that Back exits cleanly to Q2 Pod.
 - [ ] **M3 — Controls and game library.** Add a microSD game picker, map D-pad and A/B inputs, test games that combine button presses with crank movement, and return a clear error for unsupported bundles.
 - [ ] **M4 — Audio, persistence, and Lua compatibility.** Add Q2 audio output and per-game save data. Test graphics, sprites, timers, input, and save/relaunch behavior across several unencrypted Lua homebrew titles. Document supported titles and their limitations.
-- [ ] **M5 — Native ARM feasibility.** The pinned Unicorn build executes an SDK-packed `pdex.bin` fixture in a MIPS32 user process under QEMU. Measure timing and memory on a physical Q2 before deciding whether to integrate broader native support.
+- [ ] **M5 — Native ARM feasibility.** The pinned Unicorn build executes an SDK-packed `pdex.bin` fixture in a MIPS32 user process under QEMU. The optional Games entry records timing and memory to microSD. Collect a physical Q2 report before deciding whether to integrate broader native support.
 - [ ] **M6 — First public release.** Publish a reproducible MIPS build and installable microSD ZIP, with installation steps, controls, and a compatibility list based on hardware testing. A Lua-only release can ship if M5 remains experimental.
 
 ## Hardware and compatibility

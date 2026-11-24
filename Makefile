@@ -115,3 +115,14 @@ $(BUILD)/native.pdx/pdex.bin: tests/native/demo.s tests/native/demo.ld tests/nat
 	$(ARM_LD) --emit-relocs -T tests/native/demo.ld -o $(BUILD)/native-input/pdex.elf $(BUILD)/native-input/demo.o
 	cp tests/native/pdxinfo $(BUILD)/native-input/
 	"$(PDC)" -k $(BUILD)/native-input $(BUILD)/native.pdx
+
+PROBE_DIR := $(BUILD)/probe-card/.pdprobe
+
+.PHONY: native-card
+native-card: native-probe
+	readelf -h $(BUILD)/native-probe | grep -q 'Machine:.*MIPS'
+	mkdir -p "$(PROBE_DIR)"
+	cp $(BUILD)/native-probe "$(PROBE_DIR)/q2-pdprobe"
+	cp $(BUILD)/native.pdx/pdex.bin tests/native/q2app LICENSE "$(PROBE_DIR)/"
+	cp $(UNICORN_SRC)/COPYING $(UNICORN_SRC)/COPYING.LGPL2 $(UNICORN_SRC)/COPYING_GLIB "$(PROBE_DIR)/"
+	cd "$(PROBE_DIR)/.." && rm -f ../q2-playdate-native-probe.zip && zip -q ../q2-playdate-native-probe.zip .pdprobe/q2-pdprobe .pdprobe/pdex.bin .pdprobe/q2app .pdprobe/LICENSE .pdprobe/COPYING*
