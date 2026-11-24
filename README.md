@@ -63,6 +63,21 @@ With QEMU user-mode installed, run the same fixtures against that build with `ma
 - [CrankBoy](https://github.com/CrankBoyHQ/crankboy-app) runs Game Boy and Game Boy Color games on a Playdate. It is a separate port candidate for Game Boy emulation.
 - [Playdate SDK documentation](https://sdk.play.date/inside-playdate) describes the graphics, input, audio, and file APIs the runtime needs to support.
 
+## M5 native ARM feasibility probe
+
+The separate MIPS32 probe builds the ARM-only Unicorn revision pinned by Cranked. It loads a real, unencrypted `pdex.bin` produced by Playdate SDK 2.7.1 from an original Thumb fixture. It checks the init event argument, the return address, and the result of a 10,000-iteration loop. It reports cold-call time, 120 warm-call timings, and peak process RSS.
+
+On Ubuntu or WSL, use CMake, a MIPS little-endian Linux C toolchain with static target zlib, Arm GNU binutils, the Playdate SDK's `pdc`, and QEMU user-mode:
+
+```sh
+make check-native BUILD=build/mipsel CC=mipsel-linux-gnu-gcc \
+    PDC=/path/to/PlaydateSDK/bin/pdc RUNNER='qemu-mipsel -cpu XBurstR2'
+```
+
+For physical testing, the same build produces `build/mipsel/native-probe` and `build/mipsel/native.pdx/pdex.bin`. Copy both to the Q2 and run the probe with the path to the binary from a device shell. The probe is a terminal tool and is separate from the Games card package.
+
+The proof covers ARM execution only. The fixture has no relocations, BSS, API calls or graphics. The regular card app still supports Lua bundles. Native game support will need a general loader, the Playdate C API bridge, and measurements on the device.
+
 ## Milestones
 
 - [x] **M0 — Source investigation.** Identify a runtime that loads Playdate bundles, review its dependencies, and find a Q2 Pod app to use as a platform reference.
@@ -70,7 +85,7 @@ With QEMU user-mode installed, run the same fixtures against that build with `ma
 - [ ] **M2 — First playable demo.** Package the runtime as a Q2 Pod card app. Render the Playdate's 400 × 240 frame at 320 × 192, map wheel deltas to crank rotation, and test a demo that uses sprites and the crank. Record frame time and peak RSS on a physical Q2 and verify that Back exits cleanly to Q2 Pod.
 - [ ] **M3 — Controls and game library.** Add a microSD game picker, map D-pad and A/B inputs, test games that combine button presses with crank movement, and return a clear error for unsupported bundles.
 - [ ] **M4 — Audio, persistence, and Lua compatibility.** Add Q2 audio output and per-game save data. Test graphics, sprites, timers, input, and save/relaunch behavior across several unencrypted Lua homebrew titles. Document supported titles and their limitations.
-- [ ] **M5 — Native ARM feasibility.** Check whether the Unicorn version used by Cranked can execute an ARM Playdate binary on the Q2's MIPS host. Test one unencrypted `pdex.bin` demo and measure frame time and memory. Proceed with native-game support if those results are practical.
+- [ ] **M5 — Native ARM feasibility.** The pinned Unicorn build executes an SDK-packed `pdex.bin` fixture in a MIPS32 user process under QEMU. Measure timing and memory on a physical Q2 before deciding whether to integrate broader native support.
 - [ ] **M6 — First public release.** Publish a reproducible MIPS build and installable microSD ZIP, with installation steps, controls, and a compatibility list based on hardware testing. A Lua-only release can ship if M5 remains experimental.
 
 ## Hardware and compatibility

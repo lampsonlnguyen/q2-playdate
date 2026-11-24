@@ -1,0 +1,4 @@
+name=Q2 Native CPU Probe
+author=Q2 Playdate contributors
+bundleID=org.q2pod.playdate.nativeprobe
+version=0.1

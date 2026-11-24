@@ -46,3 +46,44 @@ card: $(BUILD)/q2-playdate
 	$(PDC) demo $(BUILD)/card/.playdate/demo.pdx
 	$(PDC) demos/save-tone $(BUILD)/card/.playdate/games/Save-and-Tone.pdx
 	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
+
+ARM_AS ?= arm-none-eabi-as
+ARM_LD ?= arm-none-eabi-ld
+UNICORN_SRC ?= build/unicorn
+UNICORN_BUILD ?= build/unicorn-cross
+UNICORN_REV := 7c5db94191defc1e04a4f66f4eb1220903cba837
+UNICORN_LIBS := $(addprefix $(UNICORN_BUILD)/,libunicorn-static.a libarm-softmmu.a libunicorn-common.a)
+CMAKE ?= cmake
+JOBS ?= 4
+
+.PHONY: native-probe check-native
+native-probe: $(BUILD)/native-probe $(BUILD)/native.pdx/pdex.bin
+
+check-native: native-probe
+	$(RUNNER) $(BUILD)/native-probe $(BUILD)/native.pdx/pdex.bin
+
+$(UNICORN_SRC)/.pinned:
+	mkdir -p $(dir $(UNICORN_SRC))
+	git clone --no-checkout https://github.com/unicorn-engine/unicorn.git $(UNICORN_SRC)
+	git -C $(UNICORN_SRC) checkout --detach $(UNICORN_REV)
+	touch $@
+
+$(UNICORN_BUILD)/.built: $(UNICORN_SRC)/.pinned
+	$(CMAKE) -S $(UNICORN_SRC) -B $(UNICORN_BUILD) -DCMAKE_SYSTEM_NAME=Linux \
+		-DCMAKE_SYSTEM_PROCESSOR=mipsel -DCMAKE_C_COMPILER="$(CC)" \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static \
+		-DUNICORN_ARCH=arm -DBUILD_SHARED_LIBS=OFF -DUNICORN_BUILD_TESTS=OFF -DUNICORN_INSTALL=OFF
+	$(CMAKE) --build $(UNICORN_BUILD) --target unicorn -j $(JOBS)
+	touch $@
+
+$(BUILD)/native-probe: tests/native/probe.c Makefile $(UNICORN_BUILD)/.built
+	mkdir -p $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(UNICORN_SRC)/include -static $(LDFLAGS) -o $@ $< \
+		-Wl,--start-group $(UNICORN_LIBS) -Wl,--end-group -latomic -lz -lm -pthread
+
+$(BUILD)/native.pdx/pdex.bin: tests/native/demo.s tests/native/demo.ld tests/native/pdxinfo Makefile
+	mkdir -p $(BUILD)/native-input
+	$(ARM_AS) -mcpu=cortex-m7 -o $(BUILD)/native-input/demo.o tests/native/demo.s
+	$(ARM_LD) --emit-relocs -T tests/native/demo.ld -o $(BUILD)/native-input/pdex.elf $(BUILD)/native-input/demo.o
+	cp tests/native/pdxinfo $(BUILD)/native-input/
+	$(PDC) -k $(BUILD)/native-input $(BUILD)/native.pdx
