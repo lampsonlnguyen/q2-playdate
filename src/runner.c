@@ -10,6 +10,7 @@
 #include "lauxlib.h"
 #include "card.h"
 #include "bundle.h"
+#include "runtime.h"
 
 enum { MAX_PDZ = 8 * 1024 * 1024, MAX_CHUNK = 2 * 1024 * 1024 };
 
@@ -157,8 +158,13 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
 
 int main(int argc, char **argv)
 {
-    if (argc == 1)
+    /* Q2 Pod supplies an audio device and, on some routes, a volume. */
+    if (argc == 1 || (argc <= 3 &&
+        (strcmp(argv[1], "plughw:0,0") == 0 || strcmp(argv[1], "usb") == 0 ||
+         strcmp(argv[1], "plug:bluealsa") == 0))) {
+        runtime_set_output(argc > 1 ? argv[1] : NULL);
         return card_run();
+    }
     if (argc != 2) {
         fprintf(stderr, "usage: %s path/to/game.pdx\n", argv[0]);
         return EXIT_FAILURE;

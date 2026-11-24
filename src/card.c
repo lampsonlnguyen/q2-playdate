@@ -3,6 +3,7 @@
 #include "card.h"
 #include "bundle.h"
 #include "picker.h"
+#include "runtime.h"
 #include "lauxlib.h"
 
 #include <errno.h>
@@ -133,6 +134,7 @@ static void card_lua_init(lua_State *lua)
     lua_pushinteger(lua, COLOR_BLACK);
     lua_setfield(lua, -2, "kColorBlack");
     lua_setfield(lua, -2, "graphics");
+    runtime_install(lua);
 }
 
 static void present(uint32_t *pixels, size_t stride, uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH])
@@ -248,11 +250,13 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                 const char *message = lua_tostring(lua, -1);
                 snprintf(error, sizeof error, "%s", message ? message : "Lua update failed");
                 report_run(frames, work, peak);
+                runtime_silence();
                 lua_close(lua);
                 lua = NULL;
                 clear_screen(pixels, stride);
             } else {
                 lua_pop(lua, 1);
+                runtime_tick();
                 present(pixels, stride, frame);
                 show_game_controls(pixels, stride);
                 int64_t elapsed = now_ms() - start;
@@ -345,6 +349,7 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
                 set_buttons(&touch, type != 'u' && x >= 220 && y >= 304 ? B : 0);
                 if (type == 'u' && x >= 220 && y >= 28 && y < 72) {
                     menu = 1;
+                    runtime_silence();
                     physical = touch = pressed = released = 0;
                     crank_change = 0;
                     clear_screen(pixels, stride);
@@ -390,6 +395,7 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
             frames = 0;
             work = peak = 0;
             memset(frame, 0, sizeof frame);
+            runtime_configure(path);
             lua = bundle_open(path, card_lua_init, error, sizeof error);
             clear_screen(pixels, stride);
         }
@@ -399,6 +405,7 @@ static int run_library(int fd, uint32_t *pixels, size_t stride)
         report_run(frames, work, peak);
         lua_close(lua);
     }
+    runtime_silence();
     return result;
 }
 

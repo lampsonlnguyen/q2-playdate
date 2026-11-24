@@ -2,7 +2,7 @@
 
 An experimental Playdate compatibility project for the Shanling Q2 running Q2 Pod. The first goal is to run a small, Lua-only Playdate demo from an unpacked `.pdx` directory as a standalone microSD app under **Library → Games**.
 
-**Status:** M3 adds an experimental Cover Flow-style library and game controls. The Lua loader has passed desktop and MIPS32 emulation tests. Physical Q2 testing is pending.
+**Status:** M4 adds experimental audio, saves, timers and procedural sprites. The Lua loader has passed desktop and MIPS32 emulation tests. Physical Q2 testing is pending.
 
 ## Try the crank demo
 
@@ -26,6 +26,17 @@ Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reop
 The in-game menu offers Resume, Game Library, and Exit to Q2 Pod. It sits above the game picture and B sits below it. The Crank Demo doubles crank travel while A is held and resets the marker on B. Q2 Pod stops music when launching the app so it can forward the side keys. Returning to the library or exiting a game writes frame timing and peak process RSS to `.playdate/last-run.txt`.
 
 The 400 × 240 game picture scales to 320 × 192. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. Bundles that require imports, native ARM, encryption, or other Playdate APIs may fail. The picker displays the loader or Lua error and stays open.
+
+## M4 compatibility
+
+| Bundle | Exercises | Status |
+| --- | --- | --- |
+| Crank Demo | Wheel, D-pad, simultaneous A and crank, rectangle graphics | Desktop simulation |
+| Save and Tone | A presses, procedural sprite, one-shot timer, saves and square-wave audio | Desktop simulation with a PCM test sink |
+
+In **Save and Tone**, press Centre to advance the marker and play a note. Reopen the game to check that the marker is restored. An underline below the markers indicates a save error. Saves stay in `.playdate/saves/` and are scoped to the bundle folder name. The player supports `playdate.datastore.read/write` for nested tables, booleans, finite numbers and strings, with a 64 KiB file limit.
+
+The audio path targets the built-in headphone jack via ALSA at 48 kHz. The Lua sound API can play one square-wave voice. Bluetooth and USB audio, samples, image sprites, and imported CoreLibs are pending. The procedural sprite subset supports custom drawing and position/size changes. The timer subset supports callbacks and repeating timers advanced by `playdate.timer.updateTimers()`.
 
 ## Build the Lua probe
 
