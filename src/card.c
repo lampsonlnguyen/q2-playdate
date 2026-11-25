@@ -257,12 +257,65 @@ typedef struct {
     int can_pan;
 } Display;
 
+/* Sharp-bilinear downscale, after q2-boy's Sharp Bilinear filter.
+ * q2-boy defaults to it and only falls back to nearest for integer
+ * scales; this is a fresh implementation of the same centered-sample
+ * idea for the 1-bit Playdate frame (q2-boy is GPL, this repo is MIT,
+ * so no q2-boy code is copied here). The 400x240 source shrinks to
+ * 320x192, a 0.8x downscale. Nearest sampling (src = dst * 5/4) drops
+ * every fifth source pixel unevenly, so thin strokes, text and
+ * diagonals come out jagged with uneven widths. A centered bilinear
+ * sample instead blends the 2x2 source pixels around each output
+ * pixel's centre, giving grey edge pixels instead of dropped or
+ * doubled ones. The per-axis samples depend only on the fixed
+ * geometry, so they are computed once. */
+typedef struct {
+    uint16_t pixel, weight;
+} ScaleSample;
+
+static ScaleSample scale_cols[GAME_WIDTH], scale_rows[GAME_HEIGHT];
+static int scale_ready;
+
+static void init_scale_samples(void)
+{
+    for (int i = 0; i < GAME_WIDTH; i++) {
+        int center = (2 * i + 1) * SOURCE_WIDTH - GAME_WIDTH;
+        int step = 2 * GAME_WIDTH;
+        int pixel = center / step;
+        if (pixel > SOURCE_WIDTH - 2)
+            pixel = SOURCE_WIDTH - 2;
+        scale_cols[i].pixel = (uint16_t)pixel;
+        scale_cols[i].weight = (uint16_t)((center % step) * 256 / step);
+    }
+    for (int i = 0; i < GAME_HEIGHT; i++) {
+        int center = (2 * i + 1) * SOURCE_HEIGHT - GAME_HEIGHT;
+        int step = 2 * GAME_HEIGHT;
+        int pixel = center / step;
+        if (pixel > SOURCE_HEIGHT - 2)
+            pixel = SOURCE_HEIGHT - 2;
+        scale_rows[i].pixel = (uint16_t)pixel;
+        scale_rows[i].weight = (uint16_t)((center % step) * 256 / step);
+    }
+    scale_ready = 1;
+}
+
 static uint32_t screen_color(uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH],
                              int x, int y, int game)
 {
     x -= GAME_LEFT;
-    if (x >= 0 && x < GAME_WIDTH && y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
-        return picture[(y - GAME_TOP) * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
+    if (x >= 0 && x < GAME_WIDTH && y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT) {
+        if (!scale_ready)
+            init_scale_samples();
+        ScaleSample col = scale_cols[x], row = scale_rows[y - GAME_TOP];
+        const uint8_t *top = picture[row.pixel], *bottom = picture[row.pixel + 1];
+        unsigned upper = top[col.pixel] * (256u - col.weight) +
+                         top[col.pixel + 1] * col.weight;
+        unsigned lower = bottom[col.pixel] * (256u - col.weight) +
+                         bottom[col.pixel + 1] * col.weight;
+        unsigned ink = (upper * (256u - row.weight) + lower * row.weight) >> 8;
+        unsigned grey = 255 - ((ink * 255) >> 8);
+        return grey * 0x010101u;
+    }
     if (game && x >= MENU_X && x < MENU_X + 44 && y >= MENU_Y && y < MENU_Y + 24 && (y - MENU_Y) % 9 < 3)
         return 0xffffff;
     if (game && x >= B_X && x < B_X + 12 && y >= B_Y && y < B_Y + 20) {
