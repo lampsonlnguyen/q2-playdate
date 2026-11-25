@@ -40,12 +40,12 @@ build/luac: Makefile $(LUA_DIR)/.pinned
 
 build/host/image-test: tests/image_test.c src/image.c src/image.h Makefile $(LUA_DIR)/.pinned
 	mkdir -p build/host
-	$(CC) $(CFLAGS) -Isrc -I$(LUA_DIR) -o $@ tests/image_test.c src/image.c $(LUA_SOURCES) -lm -lz
+	$(HOST_CC) $(CFLAGS) -Isrc -I$(LUA_DIR) -o $@ tests/image_test.c src/image.c $(LUA_SOURCES) -lm -lz
 
 check: all build/luac build/host/image-test
 	python3 tests/smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
 	python3 tests/image_check.py build/host/image-test
-	python3 tests/image_smoke.py build/luac $(BUILD)/q2-playdate
+	python3 tests/image_smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
 
 
 $(BUILD)/q2-playdate-itch: $(wildcard itch/*.go) itch/go.mod itch/go.sum

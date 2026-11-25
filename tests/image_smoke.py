@@ -134,7 +134,7 @@ function playdate.update() end
 
 
 def main():
-    _, luac, runner = sys.argv
+    _, luac, runner, *wrapper = sys.argv
     with tempfile.TemporaryDirectory() as temp:
         bundle = pathlib.Path(temp) / "image.pdx"
         assets = bundle / "Assets"
@@ -165,7 +165,7 @@ def main():
         pdz = (header + image_entry + table_entry +
                entry(b"main", 1, chunk, len(header) + len(image_entry) + len(table_entry)))
         (bundle / "main.pdz").write_bytes(pdz)
-        result = subprocess.run([runner, bundle], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([*wrapper, runner, bundle], capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result
         assert "Executed main Lua chunk" in result.stdout, result
         print("Image Lua API smoke test passed")

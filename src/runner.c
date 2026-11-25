@@ -394,7 +394,8 @@ int main(int argc, char **argv)
         if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
             fprintf(stderr, "frame %d: %s\n", frames, lua_tostring(lua, -1));
             lua_pop(lua, 1);
-            break;
+            lua_close(lua);
+            return EXIT_FAILURE;
         }
         runtime_tick();
     }
