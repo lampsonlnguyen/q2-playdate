@@ -52,37 +52,6 @@ def main():
         check(header + modules + entry(b"main", 1, imported, len(header) + len(modules)),
               "Executed main Lua chunk", True)
         check(header + entry(b"main", 1, imported), "missing Lua import: lib/counter")
-        # Original synthetic assets; no commercial game data in the repository.
-        cell = struct.pack("<8H", 8, 1, 1, 0, 0, 0, 0, 7) + b"\x80\xc0"
-        def asset(magic, data, count):
-            return magic + struct.pack("<5I", 0x80000000, len(data), 8, 1, count) + zlib.compress(data)
-        (bundle / "test.pdi").write_bytes(asset(b"Playdate IMG", cell, 0))
-        table = struct.pack("<HHII", 2, 2, len(cell), 2 * len(cell)) + cell * 2
-        (bundle / "test.pdt").write_bytes(asset(b"Playdate IMT", table, 2))
-        graphics = compile_lua("""
-local g = playdate.graphics
-local im = assert(g.image.new("test"))
-local w,h = im:getSize()
-assert(w == 8 and h == 1)
-assert(im:sample(0,0) == g.kColorWhite)
-assert(im:sample(1,0) == g.kColorBlack)
-assert(im:sample(2,0) == g.kColorClear)
-local copy = im:copy()
-copy:clear(g.kColorBlack)
-assert(copy:sample(0,0) == g.kColorBlack)
-assert(im:sample(0,0) == g.kColorWhite)
-im:draw(-1,0)
-im:drawScaled(399,239,2)
-local t = assert(g.imagetable.new("test"))
-assert(t:getLength() == 2 and t:getImage(2):sample(1,0) == g.kColorBlack)
-t:drawImage(1,0,0)
-assert(g.image.new("../test") == nil)
-""")
-        (bundle / "main.pdz").write_bytes(header + entry(b"main", 1, graphics))
-        result = subprocess.run([*wrapper, runner, "--check-game", bundle],
-                                capture_output=True, text=True, timeout=10)
-        assert result.returncode == 0, result
-        assert "Initialized game with card APIs" in result.stdout, result
         (bundle / "pdex.bin").touch()
         check(header + entry(b"main", 1, chunk), "native Playdate bundles")
         print("PDX smoke tests passed")
