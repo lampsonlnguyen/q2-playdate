@@ -27,7 +27,7 @@ Extract `build/mipsel/q2-playdate-card.zip` to the microSD root. In Q2 Pod, reop
 
 The in-game menu offers Resume, Game Library, and Exit to Q2 Pod. It sits above the game picture and B sits below it. The Crank Demo doubles crank travel while A is held and resets the marker on B. Q2 Pod stops music when launching the app so it can forward the side keys. Returning to the library or exiting a game writes frame timing and peak process RSS to `.playdate/last-run.txt`.
 
-The 400 × 240 game picture scales to 320 × 192. The renderer uses portrait-native 320 × 375 framebuffers and also accepts the rotated 375 × 320 layout. It flips framebuffer pages when supported and writes to the visible page otherwise. Graphics support includes rectangle outlines and one-pixel lines. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. The loader resolves bundled Lua imports in `main.pdz`. Games may still require Playdate APIs that are unavailable. The current player requires an unencrypted Lua bundle. The picker displays the loader or Lua error and stays open.
+The 400 × 240 game picture scales to 320 × 192. The picture is centered in the Q2’s 375 × 320 view. On the 320 × 375 framebuffer, the renderer writes it 90° clockwise, following the same screen mapping as q2-pico8. It flips framebuffer pages when supported and writes to the visible page otherwise. Graphics support includes rectangle outlines and one-pixel lines. The runtime supports a small graphics API, crank deltas, and held/just-pressed/just-released button queries. The loader resolves bundled Lua imports in `main.pdz`. Games may still require Playdate APIs that are unavailable. The current player requires an unencrypted Lua bundle. The picker displays the loader or Lua error and stays open.
 
 ## Download free games from itch.io
 
@@ -84,7 +84,7 @@ make check-native BUILD=build/mipsel CC=mipsel-linux-gnu-gcc \
     PDC=/path/to/PlaydateSDK/bin/pdc RUNNER='qemu-mipsel -cpu XBurstR2'
 ```
 
-For physical testing, the same build produces `build/mipsel/native-probe` and `build/mipsel/native.pdx/pdex.bin`. Copy both to the Q2 and run the probe with the path to the binary from a device shell. The probe is a terminal tool and is separate from the Games card package.
+To build the hardware test ZIP, run the same command with `native-card` in place of `check-native`. Extract `build/mipsel/q2-playdate-native-probe.zip` to the microSD root, keeping the hidden `.pdprobe` directory. On the Q2, open **Library → Games → Playdate ARM Probe** and press **Centre**. The benchmark runs once and returns to Games. Open `playdate-native-report.txt` at the card root to see the timings, peak RSS, and final PASS or FAIL. Each launch replaces the report. A report containing only the start line indicates the probe did not finish. The Lua player and this optional diagnostic install independently.
 
 The proof covers ARM execution only. The fixture has no relocations, BSS, API calls or graphics. The regular card app still supports Lua bundles. Native game support will need a general loader, the Playdate C API bridge, and measurements on the device.
 
@@ -95,7 +95,7 @@ The proof covers ARM execution only. The fixture has no relocations, BSS, API ca
 - [ ] **M2 — First playable demo.** Package the runtime as a Q2 Pod card app. Render the Playdate's 400 × 240 frame at 320 × 192, map wheel deltas to crank rotation, and test a demo that uses sprites and the crank. Record frame time and peak RSS on a physical Q2 and verify that Back exits cleanly to Q2 Pod.
 - [ ] **M3 — Controls and game library.** Add a microSD game picker, map D-pad and A/B inputs, test games that combine button presses with crank movement, and return a clear error for unsupported bundles.
 - [ ] **M4 — Audio, persistence, and Lua compatibility.** Add Q2 audio output and per-game save data. Test graphics, sprites, timers, input, and save/relaunch behavior across several unencrypted Lua homebrew titles. Document supported titles and their limitations.
-- [ ] **M5 — Native ARM feasibility.** The pinned Unicorn build executes an SDK-packed `pdex.bin` fixture in a MIPS32 user process under QEMU. Measure timing and memory on a physical Q2 before deciding whether to integrate broader native support.
+- [ ] **M5 — Native ARM feasibility.** The pinned Unicorn build executes an SDK-packed `pdex.bin` fixture in a MIPS32 user process under QEMU. The optional Games entry records timing and memory to microSD. Collect a physical Q2 report before deciding whether to integrate broader native support.
 - [ ] **M6 — First public release.** Publish a reproducible MIPS build and installable microSD ZIP, with installation steps, controls, and a compatibility list based on hardware testing. A Lua-only release can ship if M5 remains experimental.
 
 ## Hardware and compatibility
