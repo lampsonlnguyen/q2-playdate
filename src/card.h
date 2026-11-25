@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lua.h"
+
 #ifndef CARD_ROOT
 #define CARD_ROOT "/mnt/mmc/.playdate"
 #endif
@@ -12,3 +14,6 @@ enum {
 };
 
 int card_run(void);
+/* Install the playdate API (graphics, display, runtime) on the
+ * playdate table at the top of the stack. */
+void card_lua_init(lua_State *lua);
