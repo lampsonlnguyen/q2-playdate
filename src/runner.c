@@ -11,6 +11,7 @@
 #include "lualib.h"
 #include "card.h"
 #include "bundle.h"
+#include "image.h"
 #include "runtime.h"
 
 enum { MAX_PDZ = 8 * 1024 * 1024, MAX_CHUNK = 2 * 1024 * 1024 };
@@ -41,12 +42,12 @@ static const char *index_chunks(lua_State *lua, const unsigned char *pdz, size_t
         size_t length = entry >> 8;
         if (pos > size || length > size - pos)
             return "truncated PDZ entry";
-        if ((entry & 15) == 1) {
+        if ((entry & 15) == 1 || (entry & 15) == 2 || (entry & 15) == 3) {
             lua_getfield(lua, -1, (const char *)name);
             int duplicate = !lua_isnil(lua, -1);
             lua_pop(lua, 1);
             if (duplicate)
-                return "duplicate Lua chunk";
+                return "duplicate PDZ entry";
             lua_pushinteger(lua, (lua_Integer)(name - pdz - 4));
             lua_setfield(lua, -2, (const char *)name);
         }
@@ -55,44 +56,119 @@ static const char *index_chunks(lua_State *lua, const unsigned char *pdz, size_t
     return NULL;
 }
 
-static const char *load_chunk(lua_State *lua, const unsigned char *pdz,
-                              size_t offset, const char *name)
+/* Locate a PDZ entry's data and decompress it if needed. On success
+ * returns NULL and sets *data_out (pointing into the PDZ, or into a
+ * malloc'd buffer owned by *decoded_out, which is NULL when the entry
+ * was stored uncompressed), *length_out and *flag_out. */
+static const char *entry_data(const unsigned char *pdz, size_t offset,
+                              const unsigned char **data_out, size_t *length_out,
+                              int *flag_out, unsigned char **decoded_out)
 {
     uint32_t entry = read_le32(pdz + offset);
     size_t end = offset + 4 + strlen((const char *)pdz + offset + 4);
-    const unsigned char *chunk = pdz + ((end + 4) & ~(size_t)3);
-    size_t chunk_size = entry >> 8;
-    int compressed = (entry & 128) != 0;
-
-    unsigned char *decoded = NULL;
-    if (compressed) {
-        if (chunk_size < 4)
-            return "invalid compressed Lua chunk";
-        unsigned long expected = read_le32(chunk);
+    const unsigned char *data = pdz + ((end + 4) & ~(size_t)3);
+    size_t length = entry >> 8;
+    *flag_out = entry & 15;
+    *decoded_out = NULL;
+    if (entry & 128) {
+        if (length < 4)
+            return "invalid compressed PDZ entry";
+        unsigned long expected = read_le32(data);
         if (expected == 0 || expected > MAX_CHUNK)
-            return "Lua chunk exceeds probe limit or is empty";
-        decoded = malloc(expected);
+            return "PDZ entry exceeds probe limit or is empty";
+        unsigned char *decoded = malloc(expected);
         if (!decoded)
             return "out of memory";
         unsigned long actual = expected;
-        if (uncompress(decoded, &actual, chunk + 4, chunk_size - 4) != Z_OK ||
+        if (uncompress(decoded, &actual, data + 4, length - 4) != Z_OK ||
             actual != expected) {
             free(decoded);
-            return "failed to decompress Lua chunk";
+            return "failed to decompress PDZ entry";
         }
-        chunk = decoded;
-        chunk_size = actual;
+        data = decoded;
+        length = actual;
+        *decoded_out = decoded;
     }
-    if (chunk_size > MAX_CHUNK) {
-        free(decoded);
-        return "Lua chunk exceeds probe limit";
+    if (length > MAX_CHUNK) {
+        free(*decoded_out);
+        *decoded_out = NULL;
+        return "PDZ entry exceeds probe limit";
     }
+    *data_out = data;
+    *length_out = length;
+    return NULL;
+}
 
+static const char *load_chunk(lua_State *lua, const unsigned char *pdz,
+                              size_t offset, const char *name)
+{
+    const unsigned char *chunk;
+    size_t chunk_size;
+    int flag;
+    unsigned char *decoded = NULL;
+    const char *error = entry_data(pdz, offset, &chunk, &chunk_size, &flag, &decoded);
+    if (error)
+        return error;
+    if (flag != 1) {
+        free(decoded);
+        return "PDZ entry is not a Lua chunk";
+    }
     int status = luaL_loadbufferx(lua, (const char *)chunk, chunk_size, name, "b");
     free(decoded);
     if (status != LUA_OK)
         return lua_tostring(lua, -1);
     return NULL;
+}
+
+/* Look up a PDZ image/imagetable entry by name and return its raw
+ * (decompressed) payload in a malloc'd buffer. Returns 0 on success,
+ * -1 when there is no such entry or it is not an image entry. */
+int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
+                         uint8_t **payload, size_t *payload_len)
+{
+    lua_getfield(lua, LUA_REGISTRYINDEX, "q2.pdz.index");
+    if (!lua_istable(lua, -1)) {
+        lua_pop(lua, 1);
+        return -1;
+    }
+    lua_getfield(lua, -1, name);
+    if (lua_isnil(lua, -1)) {
+        lua_pop(lua, 2);
+        return -1;
+    }
+    size_t offset = (size_t)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+    lua_getfield(lua, LUA_REGISTRYINDEX, "q2.pdz.data");
+    const unsigned char *pdz = lua_touserdata(lua, -1);
+    if (!pdz) {
+        lua_pop(lua, 2);
+        return -1;
+    }
+    const unsigned char *data;
+    size_t length;
+    int flag;
+    unsigned char *decoded = NULL;
+    const char *error = entry_data(pdz, offset, &data, &length, &flag, &decoded);
+    lua_pop(lua, 2);
+    if (error) {
+        free(decoded);
+        return -1;
+    }
+    if (flag != 2 && flag != 3) {
+        free(decoded);
+        return -1;
+    }
+    uint8_t *copy = malloc(length ? length : 1);
+    if (!copy) {
+        free(decoded);
+        return -1;
+    }
+    memcpy(copy, data, length);
+    free(decoded);
+    *is_table = flag == 3;
+    *payload = copy;
+    *payload_len = length;
+    return 0;
 }
 
 static int import_chunk(lua_State *lua)
@@ -120,7 +196,48 @@ static int import_chunk(lua_State *lua)
     lua_pushboolean(lua, 1);
     lua_setfield(lua, lua_upvalueindex(3), name);
 
-    const char *error = load_chunk(lua, lua_touserdata(lua, lua_upvalueindex(1)), offset, name);
+    const unsigned char *pdz = lua_touserdata(lua, lua_upvalueindex(1));
+    int flag = read_le32(pdz + offset) & 15;
+    if (flag == 2 || flag == 3) {
+        /* Image / imagetable entry: decode the raw PDI/PDT payload
+         * and return the userdata (import's return value). */
+        const unsigned char *data;
+        size_t length;
+        int actual_flag;
+        unsigned char *decoded = NULL;
+        const char *entry_error = entry_data(pdz, offset, &data, &length,
+                                             &actual_flag, &decoded);
+        if (entry_error) {
+            free(decoded);
+            lua_pushnil(lua);
+            lua_setfield(lua, lua_upvalueindex(3), name);
+            return luaL_error(lua, "%s: %s", name, entry_error);
+        }
+        if (actual_flag == 2) {
+            Image image;
+            if (image_decode_payload(data, length, 0, 0, &image) != 0) {
+                free(decoded);
+                lua_pushnil(lua);
+                lua_setfield(lua, lua_upvalueindex(3), name);
+                return luaL_error(lua, "%s: invalid image data", name);
+            }
+            free(decoded);
+            image_push(lua, &image);
+            return 1;
+        }
+        Imagetable table;
+        if (imagetable_decode_payload(data, length, 0, 0, &table) != 0) {
+            free(decoded);
+            lua_pushnil(lua);
+            lua_setfield(lua, lua_upvalueindex(3), name);
+            return luaL_error(lua, "%s: invalid imagetable data", name);
+        }
+        free(decoded);
+        imagetable_push(lua, &table);
+        return 1;
+    }
+
+    const char *error = load_chunk(lua, pdz, offset, name);
     if (!error && lua_pcall(lua, 0, 0, 0) == LUA_OK)
         return 0;
 
@@ -160,6 +277,7 @@ static void limit_instructions(lua_State *lua, lua_Debug *debug)
 lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
                        char *error, size_t error_size)
 {
+    image_set_bundle(bundle);
     char path[4096];
     int length = snprintf(path, sizeof(path), "%s/pdex.bin", bundle);
     if (length < 0 || (size_t)length >= sizeof(path)) {
@@ -198,6 +316,11 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
     lua_newtable(lua);
     const char *problem = read_ok ? index_chunks(lua, pdz, size) : "Could not read main.pdz";
     if (!problem) {
+        /* Keep the PDZ data and index reachable for image.new() lookups. */
+        lua_pushvalue(lua, 1);
+        lua_setfield(lua, LUA_REGISTRYINDEX, "q2.pdz.data");
+        lua_pushvalue(lua, 2);
+        lua_setfield(lua, LUA_REGISTRYINDEX, "q2.pdz.index");
         lua_getfield(lua, 2, "main");
         if (lua_isnil(lua, -1))
             problem = "PDZ has no main Lua chunk";
@@ -214,13 +337,18 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
             if (setup)
                 setup(lua);
             lua_setglobal(lua, "playdate");
-            lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 100000);
+            /* Bound the load only: Celeste's load is ~150-250k
+             * instructions and a frame is ~100-200k, so a lifetime
+             * limit would kill any real game after a few frames.
+             * The hook is cleared once the main chunk has run. */
+            lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 2000000);
             problem = load_chunk(lua, pdz, main_offset, "@main");
             if (!problem && lua_pcall(lua, 0, 0, 0) != LUA_OK) {
                 problem = lua_tostring(lua, -1);
                 if (!problem)
                     problem = "Lua initialization failed";
             }
+            lua_sethook(lua, NULL, 0, 0);
         }
     }
 
@@ -247,12 +375,31 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
     char error[256];
-    lua_State *lua = bundle_open(argv[1], NULL, error, sizeof error);
+    lua_State *lua = bundle_open(argv[1], card_lua_init, error, sizeof error);
     if (!lua) {
         fprintf(stderr, "%s\n", error);
         return EXIT_FAILURE;
     }
+    /* Headless smoke test: run a few frames through playdate.update,
+     * advancing the game clock each frame like the card runner does. */
+    int frames = 0;
+    for (; frames < 5; frames++) {
+        lua_getglobal(lua, "playdate");
+        lua_getfield(lua, -1, "update");
+        if (!lua_isfunction(lua, -1)) {
+            lua_pop(lua, 2);
+            break;
+        }
+        lua_remove(lua, -2);
+        if (lua_pcall(lua, 0, 0, 0) != LUA_OK) {
+            fprintf(stderr, "frame %d: %s\n", frames, lua_tostring(lua, -1));
+            lua_pop(lua, 1);
+            lua_close(lua);
+            return EXIT_FAILURE;
+        }
+        runtime_tick();
+    }
     lua_close(lua);
-    puts("Executed main Lua chunk");
+    printf("Executed main Lua chunk (%d frames)\n", frames);
     return EXIT_SUCCESS;
 }

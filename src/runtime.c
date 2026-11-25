@@ -2,6 +2,7 @@
 
 #include "runtime.h"
 #include "card.h"
+#include "image.h"
 #include "lauxlib.h"
 
 #include <ctype.h>
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <tinyalsa/pcm.h>
 
@@ -25,6 +27,7 @@ static double phase, step;
 static int amplitude;
 static int jack_enabled = 1;
 static unsigned game_ms;
+static unsigned elapsed_base;
 
 static void dac(unsigned long request, int value)
 {
@@ -55,6 +58,8 @@ void runtime_configure(const char *bundle)
 {
     runtime_silence();
     game_ms = 0;
+    elapsed_base = 0;
+    image_set_bundle(bundle);
     const char *name = strrchr(bundle, '/');
     snprintf(save_directory, sizeof save_directory, CARD_ROOT "/saves/%s-%s",
              strcmp(bundle, CARD_ROOT "/demo.pdx") == 0 ? "builtin" : "game",
@@ -307,10 +312,217 @@ static int datastore_read(lua_State *lua)
     return 1;
 }
 
+static int datastore_delete(lua_State *lua)
+{
+    char path[600];
+    lua_pushboolean(lua, save_path(lua, 1, path, sizeof path) && unlink(path) == 0);
+    return 1;
+}
+
 static int elapsed_ms(lua_State *lua)
 {
     lua_pushinteger(lua, (lua_Integer)game_ms);
     return 1;
+}
+
+/* --- Sound stubs: no audio is decoded or played. The objects accept
+ * the calls games make and stay silent. --- */
+
+static int sound_noop(lua_State *lua)
+{
+    (void)lua;
+    return 0;
+}
+
+static int sound_false(lua_State *lua)
+{
+    lua_pushboolean(lua, 0);
+    return 1;
+}
+
+static int sound_zero(lua_State *lua)
+{
+    lua_pushnumber(lua, 0);
+    return 1;
+}
+
+static int sound_one(lua_State *lua)
+{
+    lua_pushnumber(lua, 1);
+    return 1;
+}
+
+static void sound_method(lua_State *lua, const char *name, lua_CFunction fn)
+{
+    lua_pushcfunction(lua, fn);
+    lua_setfield(lua, -2, name);
+}
+
+static int fileplayer_new(lua_State *lua)
+{
+    (void)luaL_checkstring(lua, 1);
+    lua_newtable(lua);
+    sound_method(lua, "play", sound_noop);
+    sound_method(lua, "stop", sound_noop);
+    sound_method(lua, "pause", sound_noop);
+    sound_method(lua, "isPlaying", sound_false);
+    sound_method(lua, "load", sound_noop);
+    sound_method(lua, "setStopOnUnderrun", sound_noop);
+    sound_method(lua, "setVolume", sound_noop);
+    sound_method(lua, "getVolume", sound_one);
+    sound_method(lua, "setLoop", sound_noop);
+    sound_method(lua, "isLooping", sound_false);
+    sound_method(lua, "getLength", sound_zero);
+    sound_method(lua, "setOffset", sound_noop);
+    sound_method(lua, "getOffset", sound_zero);
+    sound_method(lua, "setFinishCallback", sound_noop);
+    sound_method(lua, "setRate", sound_noop);
+    sound_method(lua, "getRate", sound_one);
+    return 1;
+}
+
+static int sampleplayer_new(lua_State *lua)
+{
+    lua_newtable(lua);
+    sound_method(lua, "play", sound_noop);
+    sound_method(lua, "stop", sound_noop);
+    sound_method(lua, "isPlaying", sound_false);
+    sound_method(lua, "setVolume", sound_noop);
+    sound_method(lua, "getVolume", sound_one);
+    sound_method(lua, "setSample", sound_noop);
+    sound_method(lua, "getSample", sound_noop);
+    sound_method(lua, "setLoop", sound_noop);
+    sound_method(lua, "setRate", sound_noop);
+    sound_method(lua, "getRate", sound_one);
+    sound_method(lua, "setFinishCallback", sound_noop);
+    return 1;
+}
+
+static int sample_new(lua_State *lua)
+{
+    lua_newtable(lua);
+    sound_method(lua, "getLength", sound_zero);
+    sound_method(lua, "getSampleRate", sound_zero);
+    return 1;
+}
+
+/* --- playdate-level API stubs --- */
+
+static int menu_noop(lua_State *lua)
+{
+    (void)lua;
+    return 0;
+}
+
+static int menu_item(lua_State *lua)
+{
+    lua_newtable(lua);
+    sound_method(lua, "setTitle", sound_noop);
+    sound_method(lua, "setCallback", sound_noop);
+    sound_method(lua, "setValue", sound_noop);
+    sound_method(lua, "getValue", sound_false);
+    return 1;
+}
+
+static int get_system_menu(lua_State *lua)
+{
+    /* The Q2 has no Playdate system menu; the menu button opens the
+     * runner's own menu instead. Items are accepted and ignored. */
+    lua_newtable(lua);
+    lua_pushcfunction(lua, menu_item);
+    lua_setfield(lua, -2, "addMenuItem");
+    lua_pushcfunction(lua, menu_item);
+    lua_setfield(lua, -2, "addCheckmarkMenuItem");
+    lua_pushcfunction(lua, menu_noop);
+    lua_setfield(lua, -2, "removeMenuItem");
+    lua_pushcfunction(lua, menu_noop);
+    lua_setfield(lua, -2, "removeAllMenuItems");
+    return 1;
+}
+
+static int get_time(lua_State *lua)
+{
+    time_t now = time(NULL);
+    struct tm broken;
+    localtime_r(&now, &broken);
+    lua_newtable(lua);
+    lua_pushinteger(lua, broken.tm_year + 1900);
+    lua_setfield(lua, -2, "year");
+    lua_pushinteger(lua, broken.tm_mon + 1);
+    lua_setfield(lua, -2, "month");
+    lua_pushinteger(lua, broken.tm_mday);
+    lua_setfield(lua, -2, "day");
+    lua_pushinteger(lua, broken.tm_hour);
+    lua_setfield(lua, -2, "hour");
+    lua_pushinteger(lua, broken.tm_min);
+    lua_setfield(lua, -2, "minute");
+    lua_pushinteger(lua, broken.tm_sec);
+    lua_setfield(lua, -2, "second");
+    lua_pushinteger(lua, broken.tm_wday + 1);
+    lua_setfield(lua, -2, "weekday");
+    lua_pushinteger(lua, broken.tm_yday + 1);
+    lua_setfield(lua, -2, "yearday");
+    return 1;
+}
+
+static int epoch_from_time(lua_State *lua)
+{
+    luaL_checktype(lua, 1, LUA_TTABLE);
+    struct tm broken;
+    memset(&broken, 0, sizeof broken);
+    lua_getfield(lua, 1, "year");
+    broken.tm_year = (int)lua_tointeger(lua, -1) - 1900;
+    lua_pop(lua, 1);
+    lua_getfield(lua, 1, "month");
+    broken.tm_mon = (int)lua_tointeger(lua, -1) - 1;
+    lua_pop(lua, 1);
+    lua_getfield(lua, 1, "day");
+    broken.tm_mday = (int)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+    lua_getfield(lua, 1, "hour");
+    broken.tm_hour = (int)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+    lua_getfield(lua, 1, "minute");
+    broken.tm_min = (int)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+    lua_getfield(lua, 1, "second");
+    broken.tm_sec = (int)lua_tointeger(lua, -1);
+    lua_pop(lua, 1);
+    time_t value = mktime(&broken);
+    /* Playdate epoch: 2000-01-01 00:00:00 UTC. */
+    lua_pushinteger(lua, (lua_Integer)(value - 946684800));
+    return 1;
+}
+
+static int seconds_since_epoch(lua_State *lua)
+{
+    lua_pushinteger(lua, (lua_Integer)(time(NULL) - 946684800));
+    return 1;
+}
+
+static int get_elapsed_time(lua_State *lua)
+{
+    lua_pushnumber(lua, (lua_Number)(game_ms - elapsed_base) / 1000.0);
+    return 1;
+}
+
+static int reset_elapsed_time(lua_State *lua)
+{
+    (void)lua;
+    elapsed_base = game_ms;
+    return 0;
+}
+
+static int get_fps(lua_State *lua)
+{
+    lua_pushinteger(lua, 30);
+    return 1;
+}
+
+static int draw_fps_top(lua_State *lua)
+{
+    (void)lua;
+    return 0;
 }
 
 static int next_sprite(lua_State *lua)
@@ -354,32 +566,312 @@ static const char runtime_lua[] =
     "  end\n"
     "  for i = next, #timers do timers[i] = nil end\n"
     "end\n"
+    "-- Sprites. Methods live on the shared pd.graphics.sprite table so\n"
+    "-- class(\"X\").extends(playdate.graphics.sprite) inherits them, and\n"
+    "-- sprite.new() instances get the same table as their metatable.\n"
+    "-- Collision is a stub: checkCollisions reports overlaps only, and\n"
+    "-- moveWithCollisions just moves (no slide/freeze/bounce). The real\n"
+    "-- per-frame query, querySpritesInRect, is implemented for real\n"
+    "-- because Celeste's physics (is_solid/is_ice) uses it.\n"
     "local sprites = {}\n"
+    "local seq = 0\n"
     "pd.graphics.sprite = {}\n"
-    "function pd.graphics.sprite.new()\n"
-    "  local sprite = {x = 0, y = 0, width = 0, height = 0}\n"
-    "  function sprite:moveTo(x, y) self.x, self.y = x, y end\n"
-    "  function sprite:setSize(w, h) self.width, self.height = w, h end\n"
-    "  function sprite:add() if not sprites[self] then sprites[self] = true end end\n"
-    "  function sprite:remove() sprites[self] = nil end\n"
+    "pd.graphics.sprite.__index = pd.graphics.sprite\n"
+    "local spritelib = pd.graphics.sprite\n"
+    "function spritelib.new(imageOrTilemap)\n"
+    "  local sprite = {x = 0, y = 0, width = 0, height = 0,\n"
+    "    centerX = 0.5, centerY = 0.5, zIndex = 0, visible = true,\n"
+    "    updatesEnabled = true, ignoresDrawOffset = false,\n"
+    "    image = nil, imagetable = nil, tilemap = nil, imageIndex = 1,\n"
+    "    flip = 0, drawMode = 0, collideRect = nil,\n"
+    "    groups = nil, collidesWith = nil, collisionsEnabled = true}\n"
+    "  setmetatable(sprite, {__index = spritelib})\n"
+    "  sprite:init(imageOrTilemap)\n"
     "  return sprite\n"
     "end\n"
-    "function pd.graphics.sprite.update()\n"
-    "  local current = {}\n"
-    "  for sprite in iter, sprites do current[#current + 1] = sprite end\n"
-    "  for i = 1, #current do\n"
-    "    local sprite = current[i]\n"
-    "    if sprites[sprite] and sprite.update then sprite:update() end\n"
-    "    if sprites[sprite] and sprite.draw then\n"
-    "      sprite:draw(sprite.x - sprite.width // 2, sprite.y - sprite.height // 2, sprite.width, sprite.height)\n"
+    "function spritelib:init(imageOrTilemap)\n"
+    "  if imageOrTilemap ~= nil then\n"
+    "    if getmetatable(imageOrTilemap) == playdate.graphics.image then\n"
+    "      self:setImage(imageOrTilemap)\n"
+    "    elseif getmetatable(imageOrTilemap) == playdate.graphics.tilemap then\n"
+    "      self:setTilemap(imageOrTilemap)\n"
     "    end\n"
     "  end\n"
+    "  self:moveTo(0, 0)\n"
+    "end\n"
+    "function spritelib:moveTo(x, y) self.x, self.y = x, y end\n"
+    "function spritelib:moveBy(dx, dy) self.x, self.y = self.x + dx, self.y + dy end\n"
+    "function spritelib:getPosition() return self.x, self.y end\n"
+    "function spritelib:setSize(w, h)\n"
+    "  if self.image == nil and self.imagetable == nil and self.tilemap == nil then\n"
+    "    self.width, self.height = w, h\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getSize() return self.width, self.height end\n"
+    "function spritelib:setBounds(x, y, w, h)\n"
+    "  if self.image == nil and self.imagetable == nil and self.tilemap == nil then\n"
+    "    self.width, self.height = w, h\n"
+    "  end\n"
+    "  self:moveTo(x + self.centerX * self.width, y + self.centerY * self.height)\n"
+    "end\n"
+    "function spritelib:getBounds()\n"
+    "  return self.x - self.centerX * self.width,\n"
+    "    self.y - self.centerY * self.height, self.width, self.height\n"
+    "end\n"
+    "function spritelib:getBoundsRect()\n"
+    "  return playdate.geometry.rect.new(self:getBounds())\n"
+    "end\n"
+    "function spritelib:setCenter(x, y) self.centerX, self.centerY = x, y end\n"
+    "function spritelib:getCenter() return self.centerX, self.centerY end\n"
+    "function spritelib:setZIndex(z) self.zIndex = z end\n"
+    "function spritelib:getZIndex() return self.zIndex end\n"
+    "function spritelib:setVisible(v) self.visible = v end\n"
+    "function spritelib:isVisible() return self.visible end\n"
+    "function spritelib:hide() self.visible = false end\n"
+    "function spritelib:show() self.visible = true end\n"
+    "function spritelib:setUpdatesEnabled(v) self.updatesEnabled = v end\n"
+    "function spritelib:updatesEnabled() return self.updatesEnabled end\n"
+    "function spritelib:setIgnoresDrawOffset(v) self.ignoresDrawOffset = v end\n"
+    "function spritelib:getIgnoresDrawOffset() return self.ignoresDrawOffset end\n"
+    "function spritelib:setImage(image, flip, scale, yscale)\n"
+    "  self.image = image\n"
+    "  self.imagetable = nil\n"
+    "  self.tilemap = nil\n"
+    "  self.flip = flip or 0\n"
+    "  if image ~= nil then\n"
+    "    local w, h = image:getSize()\n"
+    "    if scale ~= nil then\n"
+    "      w = w * scale\n"
+    "      h = h * (yscale or scale)\n"
+    "    end\n"
+    "    self.width, self.height = w, h\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getImage() return self.image end\n"
+    "function spritelib:setImageTable(table, imageIndex)\n"
+    "  self.imagetable = table\n"
+    "  self.image = nil\n"
+    "  self.tilemap = nil\n"
+    "  self.imageIndex = imageIndex or self.imageIndex or 1\n"
+    "  if table ~= nil then\n"
+    "    local first = table:getImage(1)\n"
+    "    if first ~= nil then\n"
+    "      local w, h = first:getSize()\n"
+    "      self.width, self.height = w, h\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getImageTable() return self.imagetable end\n"
+    "function spritelib:setImageIndex(index)\n"
+    "  self.imageIndex = index\n"
+    "  if self.imagetable ~= nil then\n"
+    "    self.image = self.imagetable:getImage(index)\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getImageIndex() return self.imageIndex end\n"
+    "function spritelib:setTilemap(tilemap)\n"
+    "  self.tilemap = tilemap\n"
+    "  self.image = nil\n"
+    "  self.imagetable = nil\n"
+    "  if tilemap ~= nil then\n"
+    "    local w, h = tilemap:getPixelSize()\n"
+    "    self.width, self.height = w, h\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getTilemap() return self.tilemap end\n"
+    "function spritelib:setImageDrawMode(mode) self.drawMode = mode end\n"
+    "function spritelib:getImageDrawMode() return self.drawMode end\n"
+    "function spritelib:setCollideRect(x, y, w, h)\n"
+    "  if type(x) == \"table\" or type(x) == \"userdata\" then\n"
+    "    -- The SDK also accepts a rect (or a plain {x,y,width,height}\n"
+    "    -- table); Celeste passes hitbox rects directly. Normalize to\n"
+    "    -- a plain table so the collision helpers only see numbers.\n"
+    "    self.collideRect = {x = x.x, y = x.y, width = x.width, height = x.height}\n"
+    "  else\n"
+    "    self.collideRect = {x = x, y = y, width = w, height = h}\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:getCollideRect()\n"
+    "  local r = self.collideRect\n"
+    "  if r == nil then return 0, 0, self.width, self.height end\n"
+    "  return r.x, r.y, r.width, r.height\n"
+    "end\n"
+    "function spritelib:clearCollideRect() self.collideRect = nil end\n"
+    "function spritelib:setGroups(groups) self.groups = groups end\n"
+    "function spritelib:getGroups() return self.groups end\n"
+    "function spritelib:setCollidesWithGroups(groups) self.collidesWith = groups end\n"
+    "function spritelib:getCollidesWithGroups() return self.collidesWith end\n"
+    "function spritelib:setCollisionsEnabled(v) self.collisionsEnabled = v end\n"
+    "function spritelib:collisionsEnabled() return self.collisionsEnabled end\n"
+    "function spritelib:markDirty() end\n"
+    "function spritelib:setRedrawOnImageChange(v) end\n"
+    "function spritelib:setOpaque(v) end\n"
+    "function spritelib:setAnimator(animator, moveWithCollisions, removeOnCollision) end\n"
+    "function spritelib:removeAnimator() end\n"
+    "function spritelib:copy()\n"
+    "  local copy = spritelib.new()\n"
+    "  for k, v in pairs(self) do copy[k] = v end\n"
+    "  setmetatable(copy, getmetatable(self))\n"
+    "  return copy\n"
+    "end\n"
+    "function spritelib:add()\n"
+    "  if not sprites[self] then\n"
+    "    seq = seq + 1\n"
+    "    self._seq = seq\n"
+    "    sprites[self] = true\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:remove() sprites[self] = nil end\n"
+    "function spritelib.addSprite(sprite) sprite:add() end\n"
+    "function spritelib.removeSprite(sprite) sprite:remove() end\n"
+    "function spritelib.removeAll()\n"
+    "  for sprite in iter, sprites do sprites[sprite] = nil end\n"
+    "end\n"
+    "function spritelib.getAllSprites()\n"
+    "  local all = {}\n"
+    "  for sprite in iter, sprites do all[#all + 1] = sprite end\n"
+    "  return all\n"
+    "end\n"
+    "function spritelib.performOnAllSprites(func)\n"
+    "  for _, sprite in ipairs(spritelib.getAllSprites()) do func(sprite) end\n"
+    "end\n"
+    "local function collideRectOf(sprite)\n"
+    "  local bx, by, bw, bh = sprite:getBounds()\n"
+    "  local r = sprite.collideRect\n"
+    "  if r == nil then return bx, by, bw, bh end\n"
+    "  return bx + r.x, by + r.y, r.width, r.height\n"
+    "end\n"
+    "local function overlaps(a, b)\n"
+    "  local ax, ay, aw, ah = collideRectOf(a)\n"
+    "  local bx, by, bw, bh = collideRectOf(b)\n"
+    "  return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah\n"
+    "end\n"
+    "local function groupMatch(a, b)\n"
+    "  if a.collisionsEnabled == false or b.collisionsEnabled == false then return false end\n"
+    "  local function has(list, group)\n"
+    "    if list == nil then return true end\n"
+    "    for _, g in ipairs(list) do if g == group then return true end end\n"
+    "    return false\n"
+    "  end\n"
+    "  local function anyCommon(listA, listB)\n"
+    "    if listA == nil or listB == nil then return true end\n"
+    "    for _, g in ipairs(listA) do if has(listB, g) then return true end end\n"
+    "    return false\n"
+    "  end\n"
+    "  return anyCommon(a.collidesWith, b.groups) and anyCommon(b.collidesWith, a.groups)\n"
+    "end\n"
+    "function spritelib.querySpritesInRect(x, y, w, h)\n"
+    "  if type(x) == \"table\" or type(x) == \"userdata\" then\n"
+    "    -- The SDK also accepts a rect; Celeste passes one.\n"
+    "    local r = x\n"
+    "    x, y, w, h = r.x, r.y, r.width, r.height\n"
+    "  end\n"
+    "  local found = {}\n"
+    "  for sprite in iter, sprites do\n"
+    "    if sprite.visible ~= false then\n"
+    "      local sx, sy, sw, sh = collideRectOf(sprite)\n"
+    "      if sx < x + w and x < sx + sw and sy < y + h and y < sy + sh then\n"
+    "        found[#found + 1] = sprite\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return found\n"
+    "end\n"
+    "function spritelib.querySpritesAlongLine(x1, y1, x2, y2)\n"
+    "  local found = {}\n"
+    "  for sprite in iter, sprites do\n"
+    "    if sprite.visible ~= false then\n"
+    "      local sx, sy, sw, sh = collideRectOf(sprite)\n"
+    "      local minx, maxx = math.min(x1, x2), math.max(x1, x2)\n"
+    "      local miny, maxy = math.min(y1, y2), math.max(y1, y2)\n"
+    "      if sx < maxx and minx < sx + sw and sy < maxy and miny < sy + sh then\n"
+    "        found[#found + 1] = sprite\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return found\n"
+    "end\n"
+    "function spritelib:checkCollisions(x, y)\n"
+    "  local collisions = {}\n"
+    "  local oldX, oldY = self.x, self.y\n"
+    "  self.x, self.y = x, y\n"
+    "  for other in iter, sprites do\n"
+    "    if other ~= self and other.visible ~= false and groupMatch(self, other)\n"
+    "      and overlaps(self, other) then\n"
+    "      local ax, ay, aw, ah = collideRectOf(self)\n"
+    "      local bx, by, bw, bh = collideRectOf(other)\n"
+    "      collisions[#collisions + 1] = {sprite = self, other = other,\n"
+    "        type = \"overlap\", overlaps = true, ti = 0,\n"
+    "        spriteRect = playdate.geometry.rect.new(ax, ay, aw, ah),\n"
+    "        otherRect = playdate.geometry.rect.new(bx, by, bw, bh)}\n"
+    "    end\n"
+    "  end\n"
+    "  self.x, self.y = oldX, oldY\n"
+    "  return x, y, collisions, #collisions\n"
+    "end\n"
+    "function spritelib:moveWithCollisions(x, y)\n"
+    "  local actualX, actualY, collisions, count = self:checkCollisions(x, y)\n"
+    "  self:moveTo(actualX, actualY)\n"
+    "  return actualX, actualY, collisions, count\n"
+    "end\n"
+    "-- Default draw: blit the sprite's image (or its imagetable's current\n"
+    "-- image, or its tilemap) at the bounds origin. A game that defines\n"
+    "-- its own draw on a subclass overrides this.\n"
+    "function spritelib:draw(x, y, w, h)\n"
+    "  local gfx = playdate.graphics\n"
+    "  local image = self.image\n"
+    "  if image == nil and self.imagetable ~= nil then\n"
+    "    image = self.imagetable:getImage(self.imageIndex or 1)\n"
+    "  end\n"
+    "  if image ~= nil then\n"
+    "    local mode = gfx.getImageDrawMode()\n"
+    "    if self.drawMode ~= nil and self.drawMode ~= 0 then\n"
+    "      gfx.setImageDrawMode(self.drawMode)\n"
+    "    end\n"
+    "    if self.ignoresDrawOffset then\n"
+    "      image:drawIgnoringOffset(x, y, self.flip or 0)\n"
+    "    else\n"
+    "      image:draw(x, y, self.flip or 0)\n"
+    "    end\n"
+    "    if self.drawMode ~= nil and self.drawMode ~= 0 then\n"
+    "      gfx.setImageDrawMode(mode)\n"
+    "    end\n"
+    "  elseif self.tilemap ~= nil then\n"
+    "    self.tilemap:draw(x, y)\n"
+    "  end\n"
+    "end\n"
+    "function spritelib:update() end\n"
+    "local updating = false\n"
+    "function spritelib.update()\n"
+    "  if updating then return end\n"
+    "  updating = true\n"
+    "  local current = {}\n"
+    "  for sprite in iter, sprites do current[#current + 1] = sprite end\n"
+    "  table.sort(current, function(a, b)\n"
+    "    if a.zIndex ~= b.zIndex then return a.zIndex < b.zIndex end\n"
+    "    return (a._seq or 0) < (b._seq or 0)\n"
+    "  end)\n"
+    "  for i = 1, #current do\n"
+    "    local sprite = current[i]\n"
+    "    if sprites[sprite] and sprite.updatesEnabled ~= false and sprite.update then\n"
+    "      sprite:update()\n"
+    "    end\n"
+    "  end\n"
+    "  for i = 1, #current do\n"
+    "    local sprite = current[i]\n"
+    "    if sprites[sprite] and sprite.visible ~= false and sprite.draw then\n"
+    "      local bx, by, bw, bh = sprite:getBounds()\n"
+    "      sprite:draw(bx, by, bw, bh)\n"
+    "    end\n"
+    "  end\n"
+    "  updating = false\n"
     "end\n";
 
 void runtime_install(lua_State *lua)
 {
     static const luaL_Reg datastore[] = {
-        {"read", datastore_read}, {"write", datastore_write}, {NULL, NULL}
+        {"read", datastore_read}, {"write", datastore_write},
+        {"delete", datastore_delete}, {NULL, NULL}
     };
     luaL_newlib(lua, datastore);
     lua_setfield(lua, -2, "datastore");
@@ -391,7 +883,61 @@ void runtime_install(lua_State *lua)
     lua_pushcfunction(lua, synth_new);
     lua_setfield(lua, -2, "new");
     lua_setfield(lua, -2, "synth");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, fileplayer_new);
+    lua_setfield(lua, -2, "new");
+    lua_setfield(lua, -2, "fileplayer");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, sampleplayer_new);
+    lua_setfield(lua, -2, "new");
+    lua_setfield(lua, -2, "sampleplayer");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, sample_new);
+    lua_setfield(lua, -2, "new");
+    lua_setfield(lua, -2, "sample");
     lua_setfield(lua, -2, "sound");
+
+    /* playdate-level API used by games at load time. */
+    lua_pushcfunction(lua, get_system_menu);
+    lua_setfield(lua, -2, "getSystemMenu");
+    lua_pushcfunction(lua, get_time);
+    lua_setfield(lua, -2, "getTime");
+    lua_pushcfunction(lua, epoch_from_time);
+    lua_setfield(lua, -2, "epochFromTime");
+    lua_pushcfunction(lua, elapsed_ms);
+    lua_setfield(lua, -2, "getCurrentTimeMilliseconds");
+    lua_pushcfunction(lua, seconds_since_epoch);
+    lua_setfield(lua, -2, "getSecondsSinceEpoch");
+    lua_pushcfunction(lua, sound_noop);
+    lua_setfield(lua, -2, "setCrankSoundsDisabled");
+    lua_pushcfunction(lua, sound_zero);
+    lua_setfield(lua, -2, "getCrankPosition");
+    lua_pushcfunction(lua, sound_false);
+    lua_setfield(lua, -2, "isCrankDocked");
+    lua_pushcfunction(lua, sound_false);
+    lua_setfield(lua, -2, "getReduceFlashing");
+    lua_pushstring(lua, "en");
+    lua_setfield(lua, -2, "getSystemLanguage");
+    lua_pushcfunction(lua, get_elapsed_time);
+    lua_setfield(lua, -2, "getElapsedTime");
+    lua_pushcfunction(lua, reset_elapsed_time);
+    lua_setfield(lua, -2, "resetElapsedTime");
+    lua_pushcfunction(lua, get_fps);
+    lua_setfield(lua, -2, "getFPS");
+    lua_pushcfunction(lua, sound_false);
+    lua_setfield(lua, -2, "getFlipped");
+    lua_pushboolean(lua, 0);
+    lua_setfield(lua, -2, "isSimulator");
+    lua_pushcfunction(lua, sound_noop);
+    lua_setfield(lua, -2, "setMenuImage");
+    lua_pushcfunction(lua, draw_fps_top);
+    lua_setfield(lua, -2, "drawFPS");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, sound_noop);
+    lua_setfield(lua, -2, "push");
+    lua_pushcfunction(lua, sound_noop);
+    lua_setfield(lua, -2, "pop");
+    lua_setfield(lua, -2, "inputHandlers");
 
     if (luaL_loadbuffer(lua, runtime_lua, sizeof runtime_lua - 1, "=q2-runtime") == LUA_OK) {
         lua_pushvalue(lua, -2);
