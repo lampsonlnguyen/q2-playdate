@@ -731,6 +731,7 @@ void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
 
 typedef struct Font {
     char path[256];
+    int height, width, leading;
 } Font;
 
 typedef struct Rect {
@@ -1349,6 +1350,19 @@ static int lua_font_gc(lua_State *lua)
     return 0;
 }
 
+/* Font import currently exposes metrics; glyph rendering is still pending. */
+int font_push_payload(lua_State *lua, const char *name, const uint8_t *data, size_t size)
+{
+    if (size < 68 || !data[0] || !data[1])
+        return 0;
+    Font font = {0};
+    snprintf(font.path, sizeof font.path, "%s", name);
+    font.width = data[0];
+    font.height = data[1];
+    push_udata(lua, REG_FONT, &font, sizeof font);
+    return 1;
+}
+
 static int lua_font_new(lua_State *lua)
 {
     const char *path = luaL_checkstring(lua, 1);
@@ -1361,7 +1375,7 @@ static int lua_font_new(lua_State *lua)
         lua_pushfstring(lua, "font file not found: %s", path);
         return 2;
     }
-    Font font;
+    Font font = {0};
     snprintf(font.path, sizeof font.path, "%s", path);
     push_udata(lua, REG_FONT, &font, sizeof font);
     return 1;
@@ -1369,21 +1383,22 @@ static int lua_font_new(lua_State *lua)
 
 static int lua_font_get_height(lua_State *lua)
 {
-    check_udata(lua, 1, REG_FONT, "font expected");
-    lua_pushinteger(lua, 16);
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    lua_pushinteger(lua, font->height ? font->height : 16);
     return 1;
 }
 
 static int lua_font_get_leading(lua_State *lua)
 {
-    check_udata(lua, 1, REG_FONT, "font expected");
-    lua_pushinteger(lua, 0);
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    lua_pushinteger(lua, font->leading);
     return 1;
 }
 
 static int lua_font_set_leading(lua_State *lua)
 {
-    check_udata(lua, 1, REG_FONT, "font expected");
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    font->leading = luaL_checkinteger(lua, 2);
     return 0;
 }
 

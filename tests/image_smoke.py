@@ -129,6 +129,11 @@ assert(iw == 4 and ih == 4, "imported image size")
 local pdzTable = import("Assets/pdz-table")
 assert(getmetatable(pdzTable) == gfx.imagetable, "imported imagetable metatable")
 assert(pdzTable:getLength() == 2, "imported imagetable length")
+local font = assert(import("Assets/pdz-font"))
+assert(font:getHeight() == 24)
+assert(import("Assets/pdz-font") == font)
+font:setLeading(3)
+assert(font:getLeading() == 3)
 function playdate.update() end
 """
 
@@ -162,8 +167,15 @@ def main():
         table_entry = entry(b"Assets/pdz-table", 131,
                             struct.pack("<I", len(table_payload)) +
                             zlib.compress(table_payload))
-        pdz = (header + image_entry + table_entry +
-               entry(b"main", 1, chunk, len(header) + len(image_entry) + len(table_entry)))
+        font_payload = bytes([12, 24, 0, 0]) + bytes(64)
+        font_entry = entry(b"Assets/pdz-font", 135,
+                           struct.pack("<I", len(font_payload)) + zlib.compress(font_payload))
+        prefix = header + image_entry + table_entry
+        # Entry alignment depends on the start of the entry.
+        font_entry = entry(b"Assets/pdz-font", 135,
+                           struct.pack("<I", len(font_payload)) + zlib.compress(font_payload), len(prefix))
+        prefix += font_entry
+        pdz = prefix + entry(b"main", 1, chunk, len(prefix))
         (bundle / "main.pdz").write_bytes(pdz)
         result = subprocess.run([*wrapper, runner, bundle], capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result

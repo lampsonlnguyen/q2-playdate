@@ -132,3 +132,6 @@ Tilemap *tilemap_check(lua_State *lua, int index);
 int image_is(lua_State *lua, int index);
 int imagetable_is(lua_State *lua, int index);
 int tilemap_is(lua_State *lua, int index);
+
+/* Create a font handle from an embedded PFT payload; returns 1 on success. */
+int font_push_payload(lua_State *lua, const char *name, const uint8_t *data, size_t size);

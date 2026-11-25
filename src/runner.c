@@ -42,7 +42,7 @@ static const char *index_chunks(lua_State *lua, const unsigned char *pdz, size_t
         size_t length = entry >> 8;
         if (pos > size || length > size - pos)
             return "truncated PDZ entry";
-        if ((entry & 15) == 1 || (entry & 15) == 2 || (entry & 15) == 3) {
+        if ((entry & 15) == 1 || (entry & 15) == 2 || (entry & 15) == 3 || (entry & 15) == 7) {
             lua_getfield(lua, -1, (const char *)name);
             int duplicate = !lua_isnil(lua, -1);
             lua_pop(lua, 1);
@@ -189,16 +189,16 @@ static int import_chunk(lua_State *lua)
     size_t offset = (size_t)lua_tointeger(lua, -1);
     lua_pop(lua, 1);
 
+    const unsigned char *pdz = lua_touserdata(lua, lua_upvalueindex(1));
+    int flag = read_le32(pdz + offset) & 15;
     lua_getfield(lua, lua_upvalueindex(3), name);
     if (lua_toboolean(lua, -1))
-        return 0;
+        return flag == 1 ? 0 : 1;
     lua_pop(lua, 1);
     lua_pushboolean(lua, 1);
     lua_setfield(lua, lua_upvalueindex(3), name);
 
-    const unsigned char *pdz = lua_touserdata(lua, lua_upvalueindex(1));
-    int flag = read_le32(pdz + offset) & 15;
-    if (flag == 2 || flag == 3) {
+    if (flag == 2 || flag == 3 || flag == 7) {
         /* Image / imagetable entry: decode the raw PDI/PDT payload
          * and return the userdata (import's return value). */
         const unsigned char *data;
@@ -213,6 +213,18 @@ static int import_chunk(lua_State *lua)
             lua_setfield(lua, lua_upvalueindex(3), name);
             return luaL_error(lua, "%s: %s", name, entry_error);
         }
+        if (actual_flag == 7) {
+            int ok = font_push_payload(lua, name, data, length);
+            free(decoded);
+            if (!ok) {
+                lua_pushnil(lua);
+                lua_setfield(lua, lua_upvalueindex(3), name);
+                return luaL_error(lua, "%s: invalid font data", name);
+            }
+            lua_pushvalue(lua, -1);
+            lua_setfield(lua, lua_upvalueindex(3), name);
+            return 1;
+        }
         if (actual_flag == 2) {
             Image image;
             if (image_decode_payload(data, length, 0, 0, &image) != 0) {
@@ -223,6 +235,8 @@ static int import_chunk(lua_State *lua)
             }
             free(decoded);
             image_push(lua, &image);
+            lua_pushvalue(lua, -1);
+            lua_setfield(lua, lua_upvalueindex(3), name);
             return 1;
         }
         Imagetable table;
@@ -234,6 +248,8 @@ static int import_chunk(lua_State *lua)
         }
         free(decoded);
         imagetable_push(lua, &table);
+        lua_pushvalue(lua, -1);
+        lua_setfield(lua, lua_upvalueindex(3), name);
         return 1;
     }
 
