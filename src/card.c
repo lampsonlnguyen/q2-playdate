@@ -27,7 +27,9 @@
 
 enum {
     SOURCE_WIDTH = 400, SOURCE_HEIGHT = 240,
-    MENU_Y = GAME_TOP / 2 - 12, B_Y = GAME_TOP + GAME_HEIGHT + GAME_TOP / 2 - 10,
+    /* Coordinates within the centered game-width region. */
+    MENU_X = 39 - GAME_LEFT, MENU_Y = GAME_TOP / 2 - 12,
+    B_X = 62 - GAME_LEFT, B_Y = GAME_TOP + GAME_HEIGHT + GAME_TOP / 2 - 8,
     COLOR_BLACK = 0, COLOR_WHITE = 1,
     BACK_KEY = 170, PLAY_KEY = 171, CENTRE_KEY = 218,
     LEFT = 1, RIGHT = 2, UP = 4, DOWN = 8, B = 16, A = 32
@@ -261,11 +263,11 @@ static uint32_t screen_color(uint8_t picture[SOURCE_HEIGHT][SOURCE_WIDTH],
     x -= GAME_LEFT;
     if (x >= 0 && x < GAME_WIDTH && y >= GAME_TOP && y < GAME_TOP + GAME_HEIGHT)
         return picture[(y - GAME_TOP) * 5 / 4][x * 5 / 4] ? 0 : 0xffffff;
-    if (game && x >= 237 && x < 281 && y >= MENU_Y && y < MENU_Y + 24 && (y - MENU_Y) % 9 < 3)
+    if (game && x >= MENU_X && x < MENU_X + 44 && y >= MENU_Y && y < MENU_Y + 24 && (y - MENU_Y) % 9 < 3)
         return 0xffffff;
-    if (game && x >= 246 && x < 258 && y >= B_Y && y < B_Y + 20) {
+    if (game && x >= B_X && x < B_X + 12 && y >= B_Y && y < B_Y + 20) {
         static const unsigned glyph[] = {6, 5, 6, 5, 6};
-        if (glyph[(y - B_Y) / 4] & (4u >> ((x - 246) / 4)))
+        if (glyph[(y - B_Y) / 4] & (4u >> ((x - B_X) / 4)))
             return 0xffffff;
     }
     return 0;
@@ -276,6 +278,7 @@ static void display_frame(Display *display, uint8_t picture[SOURCE_HEIGHT][SOURC
     size_t stride = display->stride;
     unsigned page = display->can_pan ? display->page_rows - display->visible : display->visible;
     uint32_t *pixels = display->mapping + page * stride;
+    /* Portrait panel mapping: logical (x,y) -> (row=x,col=319-y). */
     unsigned columns = display->var.xres;
     for (unsigned row = 0; row < display->page_rows; row++) {
         uint32_t *line = pixels + row * stride;
@@ -430,10 +433,11 @@ static int run_library(int fd, Display *display)
             if (sscanf(message, "t %c %d %d", &type, &value, &axis) != 3 ||
                 value < 0 || value >= SCREEN_WIDTH || axis < 0 || axis >= SCREEN_HEIGHT)
                 continue;
+            /* Firmware touch coordinates are landscape column and row. */
             int x = value - GAME_LEFT, y = axis;
             if (lua && !menu) {
-                set_buttons(&touch, type != 'u' && x >= 220 && x < GAME_WIDTH && y >= B_Y - 10 ? B : 0);
-                if (type == 'u' && x >= 220 && x < GAME_WIDTH && y >= MENU_Y - 10 && y < MENU_Y + 34) {
+                set_buttons(&touch, type != 'u' && x >= B_X - 10 && x < B_X + 22 && y >= B_Y - 10 && y < B_Y + 30 ? B : 0);
+                if (type == 'u' && x >= MENU_X - 10 && x < MENU_X + 54 && y >= MENU_Y - 10 && y < MENU_Y + 34) {
                     menu = 1;
                     runtime_silence();
                     physical = touch = pressed = released = 0;
