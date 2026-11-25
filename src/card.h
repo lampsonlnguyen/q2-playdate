@@ -12,3 +12,7 @@ enum {
 };
 
 int card_run(void);
+
+#include "lua.h"
+void card_lua_init(lua_State *lua);
+void card_configure_bundle(const char *path);

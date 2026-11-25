@@ -242,6 +242,15 @@ int main(int argc, char **argv)
         runtime_set_output(argc > 1 ? argv[1] : NULL);
         return card_run();
     }
+    if (argc == 3 && strcmp(argv[1], "--check-game") == 0) {
+        char error[256];
+        card_configure_bundle(argv[2]);
+        lua_State *lua = bundle_open(argv[2], card_lua_init, error, sizeof error);
+        if (!lua) { fprintf(stderr, "%s\n", error); return EXIT_FAILURE; }
+        lua_close(lua);
+        puts("Initialized game with card APIs");
+        return EXIT_SUCCESS;
+    }
     if (argc != 2) {
         fprintf(stderr, "usage: %s path/to/game.pdx\n", argv[0]);
         return EXIT_FAILURE;

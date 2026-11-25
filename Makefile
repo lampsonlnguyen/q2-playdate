@@ -31,7 +31,7 @@ $(TINYALSA_DIR)/.pinned:
 	git -C $(TINYALSA_DIR) checkout --detach $(TINYALSA_REV)
 	touch $@
 
-$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
+$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/image_api.inc src/bundle.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
 	mkdir -p $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
 

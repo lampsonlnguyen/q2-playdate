@@ -155,6 +155,13 @@ static int draw_line(lua_State *lua)
     return 0;
 }
 
+#include "image_api.inc"
+
+void card_configure_bundle(const char *path)
+{
+    snprintf(image_bundle, sizeof image_bundle, "%s", path);
+}
+
 static int get_crank_change(lua_State *lua)
 {
     lua_pushnumber(lua, crank_change);
@@ -162,7 +169,7 @@ static int get_crank_change(lua_State *lua)
     return 1;
 }
 
-static void card_lua_init(lua_State *lua)
+void card_lua_init(lua_State *lua)
 {
     static const luaL_Reg graphics[] = {
         {"clear", clear_frame}, {"setColor", set_color}, {"fillRect", fill_rect},
@@ -189,6 +196,7 @@ static void card_lua_init(lua_State *lua)
     lua_setfield(lua, -2, "kColorWhite");
     lua_pushinteger(lua, COLOR_BLACK);
     lua_setfield(lua, -2, "kColorBlack");
+    image_install(lua);
     lua_setfield(lua, -2, "graphics");
     runtime_install(lua);
 }
@@ -493,6 +501,7 @@ static int run_library(int fd, Display *display)
             frames = 0;
             work = peak = 0;
             memset(frame, 0, sizeof frame);
+            card_configure_bundle(path);
             runtime_configure(path);
             lua = bundle_open(path, card_lua_init, error, sizeof error);
         }
