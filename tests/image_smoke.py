@@ -350,6 +350,13 @@ assert(embeddedFont:getLeading() == 3)
 assert(embeddedFont:getTextWidth('ABC') == 18)
 local fw,fh = embeddedFont:getTextSize('A\nB')
 assert(fw == 6 and fh == 51)
+local click = assert(import("Assets/pdz-click"))
+assert(click:getSampleRate() == 22050)
+assert(math.abs(click:getLength() - 4/22050) < 0.00001)
+assert(import("Assets/pdz-click") == click)
+local player = playdate.sound.sampleplayer.new(click)
+assert(player:getSample() == click)
+player:play()
 function playdate.update() end
 """
 
@@ -391,6 +398,8 @@ def main():
         font_entry = entry(b"Assets/pdz-font", 135,
                            struct.pack("<I", len(font_payload)) + zlib.compress(font_payload), len(prefix))
         prefix += font_entry
+        audio = struct.pack("<I", 22050) + bytes([128, 129, 130, 131])
+        prefix += entry(b"Assets/pdz-click", 5, audio, len(prefix))
         pdz = prefix + entry(b"main", 1, chunk, len(prefix))
         (bundle / "main.pdz").write_bytes(pdz)
         result = subprocess.run([*wrapper, runner, bundle], capture_output=True, text=True, timeout=10)

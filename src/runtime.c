@@ -383,6 +383,17 @@ static int fileplayer_new(lua_State *lua)
     return 1;
 }
 
+static int player_set_sample(lua_State *lua)
+{
+    lua_pushvalue(lua, 2);
+    lua_setfield(lua, 1, "_sample");
+    return 0;
+}
+static int player_get_sample(lua_State *lua)
+{
+    lua_getfield(lua, 1, "_sample");
+    return 1;
+}
 static int sampleplayer_new(lua_State *lua)
 {
     lua_newtable(lua);
@@ -391,8 +402,12 @@ static int sampleplayer_new(lua_State *lua)
     sound_method(lua, "isPlaying", sound_false);
     sound_method(lua, "setVolume", sound_noop);
     sound_method(lua, "getVolume", sound_one);
-    sound_method(lua, "setSample", sound_noop);
-    sound_method(lua, "getSample", sound_noop);
+    sound_method(lua, "setSample", player_set_sample);
+    sound_method(lua, "getSample", player_get_sample);
+    if (lua_istable(lua, 1)) {
+        lua_pushvalue(lua, 1);
+        lua_setfield(lua, -2, "_sample");
+    }
     sound_method(lua, "setLoop", sound_noop);
     sound_method(lua, "setRate", sound_noop);
     sound_method(lua, "getRate", sound_one);
@@ -420,11 +435,55 @@ static int channel_new(lua_State *lua)
     return 1;
 }
 
-static int sample_new(lua_State *lua)
+static int sample_rate(lua_State *lua)
+{
+    lua_getfield(lua, 1, "_rate");
+    return 1;
+}
+
+static int sample_length(lua_State *lua)
+{
+    lua_getfield(lua, 1, "_length");
+    return 1;
+}
+
+static void sample_fields(lua_State *lua, unsigned rate, double length)
 {
     lua_newtable(lua);
-    sound_method(lua, "getLength", sound_zero);
-    sound_method(lua, "getSampleRate", sound_zero);
+    lua_pushinteger(lua, rate);
+    lua_setfield(lua, -2, "_rate");
+    lua_pushnumber(lua, length);
+    lua_setfield(lua, -2, "_length");
+    sound_method(lua, "getLength", sample_length);
+    sound_method(lua, "getSampleRate", sample_rate);
+}
+
+int runtime_push_sample(lua_State *lua, const unsigned char *data, size_t length)
+{
+    if (length < 4) return 0;
+    unsigned rate = data[0] | (unsigned)data[1] << 8 | (unsigned)data[2] << 16;
+    unsigned format = data[3];
+    if (!rate || rate > 192000 || format > 5) return 0;
+    size_t bytes = length - 4;
+    unsigned channels = (format & 1) ? 2 : 1;
+    double frames = 0;
+    if (format < 4) {
+        frames = bytes / (channels * (format >= 2 ? 2 : 1));
+    } else if (bytes >= 2) {
+        unsigned block = data[4] | (unsigned)data[5] << 8;
+        if (block <= 4 * channels) return 0;
+        size_t rest = bytes - 2;
+        size_t full = rest / block, tail = rest % block;
+        frames = full * (1 + (block - 4 * channels) * 2 / channels);
+        if (tail >= 4 * channels) frames += 1 + (tail - 4 * channels) * 2 / channels;
+    }
+    sample_fields(lua, rate, frames / rate);
+    return 1;
+}
+
+static int sample_new(lua_State *lua)
+{
+    sample_fields(lua, 0, 0);
     return 1;
 }
 
