@@ -2,7 +2,9 @@
 
 #include "runtime.h"
 #include "card.h"
+#include "file.h"
 #include "image.h"
+#include "json_lua.h"
 #include "lauxlib.h"
 
 #include <ctype.h>
@@ -398,6 +400,26 @@ static int sampleplayer_new(lua_State *lua)
     return 1;
 }
 
+/* SDK: playdate.sound.channel.new() — XTRIS creates three channels
+ * at load (voice-overs, SFX, BGM) and calls addSource / setVolume
+ * on them. Silent stub, like the fileplayer/sampleplayer ones: no
+ * audio is decoded or played. */
+static int channel_new(lua_State *lua)
+{
+    lua_newtable(lua);
+    sound_method(lua, "addSource", sound_noop);
+    sound_method(lua, "removeSource", sound_noop);
+    sound_method(lua, "setVolume", sound_noop);
+    sound_method(lua, "getVolume", sound_one);
+    sound_method(lua, "setPan", sound_noop);
+    sound_method(lua, "getPan", sound_zero);
+    sound_method(lua, "addEffect", sound_noop);
+    sound_method(lua, "removeEffect", sound_noop);
+    sound_method(lua, "setVolumeModulator", sound_noop);
+    sound_method(lua, "setPanModulator", sound_noop);
+    return 1;
+}
+
 static int sample_new(lua_State *lua)
 {
     lua_newtable(lua);
@@ -412,6 +434,14 @@ static int menu_noop(lua_State *lua)
 {
     (void)lua;
     return 0;
+}
+
+static int menu_get_items(lua_State *lua)
+{
+    /* Items are accepted and ignored (see get_system_menu), so the
+     * list is always empty. */
+    lua_newtable(lua);
+    return 1;
 }
 
 static int menu_item(lua_State *lua)
@@ -433,10 +463,14 @@ static int get_system_menu(lua_State *lua)
     lua_setfield(lua, -2, "addMenuItem");
     lua_pushcfunction(lua, menu_item);
     lua_setfield(lua, -2, "addCheckmarkMenuItem");
+    lua_pushcfunction(lua, menu_item);
+    lua_setfield(lua, -2, "addOptionsMenuItem");
     lua_pushcfunction(lua, menu_noop);
     lua_setfield(lua, -2, "removeMenuItem");
     lua_pushcfunction(lua, menu_noop);
     lua_setfield(lua, -2, "removeAllMenuItems");
+    lua_pushcfunction(lua, menu_get_items);
+    lua_setfield(lua, -2, "getMenuItems");
     return 1;
 }
 
@@ -445,6 +479,8 @@ static int get_time(lua_State *lua)
     time_t now = time(NULL);
     struct tm broken;
     localtime_r(&now, &broken);
+    struct timespec precise;
+    clock_gettime(CLOCK_REALTIME, &precise);
     lua_newtable(lua);
     lua_pushinteger(lua, broken.tm_year + 1900);
     lua_setfield(lua, -2, "year");
@@ -458,6 +494,10 @@ static int get_time(lua_State *lua)
     lua_setfield(lua, -2, "minute");
     lua_pushinteger(lua, broken.tm_sec);
     lua_setfield(lua, -2, "second");
+    /* SDK: getTime() also has millisecond. XTRIS's log timestamp
+     * concatenates it, so a missing field crashes the game at load. */
+    lua_pushinteger(lua, precise.tv_nsec / 1000000);
+    lua_setfield(lua, -2, "millisecond");
     lua_pushinteger(lua, broken.tm_wday + 1);
     lua_setfield(lua, -2, "weekday");
     lua_pushinteger(lua, broken.tm_yday + 1);
@@ -704,6 +744,12 @@ static const char runtime_lua[] =
     "function spritelib:setCollisionsEnabled(v) self.collisionsEnabled = v end\n"
     "function spritelib:collisionsEnabled() return self.collisionsEnabled end\n"
     "function spritelib:markDirty() end\n"
+    "-- addDirtyRect is a no-op here: the player redraws the whole frame\n"
+    "-- every update, so there is no dirty-rect list to maintain. XTRIS's\n"
+    "-- title page calls self:addDirtyRect(34, 190, 17, 17) from update()\n"
+    "-- and fails without it. Since spritelib IS pd.graphics.sprite, this\n"
+    "-- also covers the module form sprite.addDirtyRect(x, y, w, h).\n"
+    "function spritelib:addDirtyRect(...) end\n"
     "function spritelib:setRedrawOnImageChange(v) end\n"
     "function spritelib:setOpaque(v) end\n"
     "function spritelib:setAnimator(animator, moveWithCollisions, removeOnCollision) end\n"
@@ -876,6 +922,8 @@ void runtime_install(lua_State *lua)
     luaL_newlib(lua, datastore);
     lua_setfield(lua, -2, "datastore");
 
+    file_install(lua);
+
     lua_newtable(lua);
     lua_pushinteger(lua, 0);
     lua_setfield(lua, -2, "kWaveSquare");
@@ -891,6 +939,10 @@ void runtime_install(lua_State *lua)
     lua_pushcfunction(lua, sampleplayer_new);
     lua_setfield(lua, -2, "new");
     lua_setfield(lua, -2, "sampleplayer");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, channel_new);
+    lua_setfield(lua, -2, "new");
+    lua_setfield(lua, -2, "channel");
     lua_newtable(lua);
     lua_pushcfunction(lua, sample_new);
     lua_setfield(lua, -2, "new");
@@ -943,9 +995,26 @@ void runtime_install(lua_State *lua)
         lua_pushvalue(lua, -2);
         lua_pushcfunction(lua, elapsed_ms);
         lua_pushcfunction(lua, next_sprite);
-        if (lua_pcall(lua, 3, 0, 0) == LUA_OK)
-            return;
+        if (lua_pcall(lua, 3, 0, 0) != LUA_OK) {
+            fprintf(stderr, "Q2 Lua runtime: %s\n", lua_tostring(lua, -1));
+            lua_pop(lua, 1);
+        }
+    } else {
+        fprintf(stderr, "Q2 Lua runtime: %s\n", lua_tostring(lua, -1));
+        lua_pop(lua, 1);
     }
-    fprintf(stderr, "Q2 Lua runtime: %s\n", lua_tostring(lua, -1));
-    lua_pop(lua, 1);
+
+    /* json: the SDK's global json library (src/json.lua). XTRIS's
+     * achievements module loads/saves Achievements.json with
+     * decodeFile/encodeToFile, which read/write through playdate.file. */
+    if (luaL_loadbuffer(lua, json_lua, sizeof json_lua - 1, "=q2-json") == LUA_OK) {
+        lua_pushvalue(lua, -2);
+        if (lua_pcall(lua, 1, 0, 0) != LUA_OK) {
+            fprintf(stderr, "Q2 Lua json: %s\n", lua_tostring(lua, -1));
+            lua_pop(lua, 1);
+        }
+    } else {
+        fprintf(stderr, "Q2 Lua json: %s\n", lua_tostring(lua, -1));
+        lua_pop(lua, 1);
+    }
 }

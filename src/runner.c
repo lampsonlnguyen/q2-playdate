@@ -11,6 +11,7 @@
 #include "lualib.h"
 #include "card.h"
 #include "bundle.h"
+#include "file.h"
 #include "image.h"
 #include "runtime.h"
 
@@ -277,6 +278,10 @@ static void open_game_libraries(lua_State *lua)
     const luaL_Reg libraries[] = {
         {LUA_MATHLIBNAME, luaopen_math}, {LUA_STRLIBNAME, luaopen_string},
         {LUA_TABLIBNAME, luaopen_table}, {LUA_UTF8LIBNAME, luaopen_utf8},
+        /* The debug library: the real Playdate runtime ships it, and
+         * official CoreLibs need it (CoreLibs/utilities/where calls
+         * debug.getinfo; XTRIS imports where at load). */
+        {LUA_DBLIBNAME, luaopen_debug},
     };
     for (size_t i = 0; i < sizeof libraries / sizeof *libraries; i++) {
         luaL_requiref(lua, libraries[i].name, libraries[i].func, 1);
@@ -294,6 +299,7 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
                        char *error, size_t error_size)
 {
     image_set_bundle(bundle);
+    file_set_bundle(bundle);
     char path[4096];
     int length = snprintf(path, sizeof(path), "%s/pdex.bin", bundle);
     if (length < 0 || (size_t)length >= sizeof(path)) {

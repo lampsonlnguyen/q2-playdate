@@ -31,9 +31,13 @@ $(TINYALSA_DIR)/.pinned:
 	git -C $(TINYALSA_DIR) checkout --detach $(TINYALSA_REV)
 	touch $@
 
-$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/image.c src/image.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
+build/json_lua.h: src/json.lua tools/embed_lua.py
+	mkdir -p build
+	python3 tools/embed_lua.py src/json.lua json_lua $@
+
+$(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/file.c src/file.h src/image.c src/image.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h build/json_lua.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
 	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/image.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Ibuild -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/file.c src/image.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
 
 build/luac: Makefile $(LUA_DIR)/.pinned
 	$(HOST_CC) -O2 -I$(LUA_DIR) -o $@ $(LUA_DIR)/luac.c $(LUA_SOURCES) -lm
@@ -46,6 +50,8 @@ check: all build/luac build/host/image-test
 	python3 tests/smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
 	python3 tests/image_check.py build/host/image-test
 	python3 tests/image_smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
+	python3 tests/file_smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
+	python3 tests/json_smoke.py build/luac $(BUILD)/q2-playdate $(RUNNER)
 
 
 $(BUILD)/q2-playdate-itch: $(wildcard itch/*.go) itch/go.mod itch/go.sum
