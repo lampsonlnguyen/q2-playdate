@@ -847,6 +847,8 @@ void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
 typedef struct Font {
     char path[256];
     int height, width, leading;
+    uint8_t *payload;
+    size_t payload_size;
     int tracking; /* setTracking value; text is not rendered, so this
                      is stored and returned but has no visual effect */
 } Font;
@@ -1670,11 +1672,13 @@ static const luaL_Reg tilemap_methods[] = {
 
 static int lua_font_gc(lua_State *lua)
 {
-    (void)lua;
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    free(font->payload);
+    font->payload = NULL;
     return 0;
 }
 
-/* Font import currently exposes metrics; glyph rendering is still pending. */
+/* Keep the packed font payload; decode glyphs on demand. */
 int font_push_payload(lua_State *lua, const char *name, const uint8_t *data, size_t size)
 {
     if (size < 68 || !data[0] || !data[1])
@@ -1683,6 +1687,11 @@ int font_push_payload(lua_State *lua, const char *name, const uint8_t *data, siz
     snprintf(font.path, sizeof font.path, "%s", name);
     font.width = data[0];
     font.height = data[1];
+    font.tracking = (int16_t)read_le16(data + 2);
+    font.payload = malloc(size);
+    if (!font.payload) return 0;
+    memcpy(font.payload, data, size);
+    font.payload_size = size;
     push_udata(lua, REG_FONT, &font, sizeof font);
     return 1;
 }
@@ -1699,6 +1708,28 @@ static int lua_font_new(lua_State *lua)
         lua_pushfstring(lua, "font file not found: %s", path);
         return 2;
     }
+    size_t size;
+    uint8_t *raw = read_file(full, &size);
+    if (raw && size >= 16 && !memcmp(raw, "Playdate FNT", 12)) {
+        int ok = 0;
+        if (read_le32(raw + 12) & 0x80000000u) {
+            if (size >= 28) {
+                unsigned long len = read_le32(raw + 16), actual = len;
+                uint8_t *data = len && len <= 8 * 1024 * 1024 ? malloc(len) : NULL;
+                if (data && uncompress(data, &actual, raw + 28, size - 28) == Z_OK && actual == len)
+                    ok = font_push_payload(lua, path, data, len);
+                free(data);
+            }
+        } else {
+            ok = font_push_payload(lua, path, raw + 16, size - 16);
+        }
+        free(raw);
+        if (ok) return 1;
+        lua_pushnil(lua);
+        lua_pushliteral(lua, "invalid compiled font");
+        return 2;
+    }
+    free(raw);
     Font font = {0};
     snprintf(font.path, sizeof font.path, "%s", path);
     push_udata(lua, REG_FONT, &font, sizeof font);
@@ -1759,32 +1790,129 @@ int text_width_estimate(const char *s)
     return (int)(chars * 8);
 }
 
+/* PFT pages use cumulative 32-bit page offsets and 16-bit glyph offsets.
+ * Both tables are relative to the end of their respective offset tables. */
+static unsigned font_bit(const uint8_t *bits, unsigned n)
+{
+    return (bits[n / 8] >> (n % 8)) & 1u;
+}
+static const uint8_t *font_glyph(const Font *font, unsigned cp, size_t *length)
+{
+    const uint8_t *p = font->payload;
+    size_t n = font->payload_size;
+    unsigned page = cp >> 8, ch = cp & 255, count = 0, index = 0;
+    if (!p || n < 68 || page >= 512 || !font_bit(p+4,page)) return NULL;
+    for (unsigned j=0;j<512;j++) {
+        if (j<page) index += font_bit(p+4,j);
+        count += font_bit(p+4,j);
+    }
+    size_t start=68+4u*count;
+    if (start>n) return NULL;
+    size_t lo=index?read_le32(p+68+4u*(index-1)):0;
+    size_t hi=read_le32(p+68+4u*index);
+    if (lo>hi || hi>n-start || hi-lo<36) return NULL;
+    p+=start+lo; n=hi-lo;
+    if (!font_bit(p+4,ch)) return NULL;
+    count=0; index=0;
+    for(unsigned j=0;j<256;j++) {
+        if(j<ch) index+=font_bit(p+4,j);
+        count+=font_bit(p+4,j);
+    }
+    start=(36+2u*count+3)&~(size_t)3;
+    if(start>n) return NULL;
+    lo=index?read_le16(p+36+2u*(index-1)):0;
+    hi=read_le16(p+36+2u*index);
+    if(lo>hi || hi>n-start || hi-lo<4) return NULL;
+    *length=hi-lo;
+    return p+start+lo;
+}
+static unsigned font_next(const unsigned char **s)
+{
+    unsigned c=*(*s)++;
+    if(c<128) return c;
+    unsigned n=c>=240&&c<=244?3:c>=224&&c<=239?2:c>=194&&c<=223?1:0;
+    if(!n) return '?';
+    c &= (1u<<(6-n))-1;
+    while(n--) {
+        unsigned d=**s;
+        if((d&192)!=128) return '?';
+        ++*s; c=(c<<6)|(d&63);
+    }
+    return c;
+}
+static int font_layout(Font *font, const char *text, int x, int y, int draw, int *height)
+{
+    int line=0, widest=0, lines=1;
+    int fh=font->height?font->height:16;
+    const unsigned char *s=(const unsigned char *)text;
+    for(unsigned limit=0;*s && limit<8192;limit++) {
+        unsigned cp=font_next(&s);
+        if(cp=='\n') { if(line>widest)widest=line; line=0; lines++; continue; }
+        size_t len=0;
+        const uint8_t *g=font_glyph(font,cp,&len);
+        if(!g && cp!=' ')g=font_glyph(font,'?',&len);
+        int advance=g?g[0]:(font->width?font->width/2:8);
+        if(draw && g) {
+            size_t off=(4+2u*g[1]+3)&~(size_t)3;
+            off+=4u*read_le16(g+2);
+            if(off<=len && len-off>=16) {
+                const uint8_t *p=g+off;
+                unsigned w=read_le16(p), h=read_le16(p+2), stride=read_le16(p+4);
+                unsigned left=read_le16(p+6), top=read_le16(p+10), flags=read_le16(p+14);
+                size_t bytes=(size_t)stride*h;
+                if(w && h && w<=512 && h<=512 && stride>=(w+7)/8 &&
+                   bytes<=len-off-16 && (!(flags&3) || bytes<=(len-off-16)/2)) {
+                    Image glyph={0};
+                    glyph.width=w+left+read_le16(p+8);
+                    glyph.height=h+top+read_le16(p+12);
+                    glyph.bw=w; glyph.bh=h; glyph.xoff=left; glyph.yoff=top;
+                    glyph.rowbytes=stride; glyph.bitmap=(uint8_t *)p+16;
+                    glyph.mask=(flags&3)?glyph.bitmap+bytes:NULL;
+                    DrawTarget *target; int mode,ox,oy,cx,cy,cw,ch;
+                    current_state(&target,&mode,&ox,&oy,&cx,&cy,&cw,&ch);
+                    image_blit(target,&glyph,x+line,y+(lines-1)*(fh+font->leading),
+                               0,mode,ox,oy,0,cx,cy,cw,ch);
+                }
+            }
+        }
+        line+=advance+font->tracking;
+    }
+    if(line>widest)widest=line;
+    if(height)*height=lines*fh+(lines-1)*font->leading;
+    return widest;
+}
 static int lua_font_get_text_width(lua_State *lua)
 {
-    check_udata(lua, 1, REG_FONT, "font expected");
-    lua_pushinteger(lua, text_width_estimate(luaL_checkstring(lua, 2)));
+    Font *font=check_udata(lua,1,REG_FONT,"font expected");
+    lua_pushinteger(lua,font_layout(font,luaL_checkstring(lua,2),0,0,0,NULL));
     return 1;
 }
-
 static int lua_font_get_text_size(lua_State *lua)
 {
-    check_udata(lua, 1, REG_FONT, "font expected");
-    lua_pushinteger(lua, text_width_estimate(luaL_checkstring(lua, 2)));
-    lua_pushinteger(lua, 16);
-    return 2;
+    Font *font=check_udata(lua,1,REG_FONT,"font expected");
+    int height;
+    int width=font_layout(font,luaL_checkstring(lua,2),0,0,0,&height);
+    lua_pushinteger(lua,width); lua_pushinteger(lua,height); return 2;
 }
-
 static int lua_font_draw_text(lua_State *lua)
 {
-    static int warned;
-    if (!warned) {
-        warned = 1;
-        fprintf(stderr, "q2-playdate: font drawing is a stub; text is not rendered\n");
-    }
-    check_udata(lua, 1, REG_FONT, "font expected");
-    (void)luaL_checkstring(lua, 2);
-    lua_pushinteger(lua, 0);
-    return 1;
+    Font *font=check_udata(lua,1,REG_FONT,"font expected");
+    const char *s=luaL_checkstring(lua,2);
+    int x=check_coord(lua,3), y=check_coord(lua,4);
+    lua_pushinteger(lua,font_layout(font,s,x,y,1,NULL)); return 1;
+}
+int font_current_text(lua_State *lua, int draw)
+{
+    const char *s=luaL_checkstring(lua,1);
+    int x=draw?check_coord(lua,2):0, y=draw?check_coord(lua,3):0;
+    lua_getfield(lua,LUA_REGISTRYINDEX,"q2.current.font");
+    Font *font=check_udata(lua,-1,REG_FONT,"font expected");
+    int height;
+    int width=font_layout(font,s,x,y,draw,&height);
+    lua_pop(lua,1);
+    lua_pushinteger(lua,width);
+    if(draw)return 1;
+    lua_pushinteger(lua,height); return 2;
 }
 
 static const luaL_Reg font_methods[] = {

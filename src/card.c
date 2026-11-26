@@ -973,26 +973,12 @@ static int clear_stencil(lua_State *lua)
 
 static int draw_text_stub(lua_State *lua)
 {
-    /* No font renderer: text is not drawn. CoreLibs/graphics.lua
-     * replaces drawTextInRect with a Lua implementation that still
-     * needs a working font, so text stays invisible; this is a known
-     * gap, logged once. */
-    static int warned;
-    if (!warned) {
-        warned = 1;
-        fprintf(stderr, "q2-playdate: font drawing is a stub; text is not rendered\n");
-    }
-    (void)lua;
-    lua_pushinteger(lua, 0);
-    return 1;
+    return font_current_text(lua, 1);
 }
 
 static int get_text_size(lua_State *lua)
 {
-    const char *text = luaL_checkstring(lua, 1);
-    lua_pushinteger(lua, text_width_estimate(text));
-    lua_pushinteger(lua, 16);
-    return 2;
+    return font_current_text(lua, 0);
 }
 
 static int get_font(lua_State *lua)

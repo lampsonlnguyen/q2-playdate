@@ -150,3 +150,5 @@ int imagetable_is(lua_State *lua, int index);
 int tilemap_is(lua_State *lua, int index);
 
 int font_push_payload(lua_State *lua, const char *name, const uint8_t *data, size_t size);
+
+int font_current_text(lua_State *lua, int draw);

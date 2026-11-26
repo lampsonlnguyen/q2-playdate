@@ -347,6 +347,9 @@ assert(embeddedFont:getHeight() == 24)
 assert(import("Assets/pdz-font") == embeddedFont)
 embeddedFont:setLeading(3)
 assert(embeddedFont:getLeading() == 3)
+assert(embeddedFont:getTextWidth('ABC') == 18)
+local fw,fh = embeddedFont:getTextSize('A\\nB')
+assert(fw == 6 and fh == 51)
 function playdate.update() end
 """
 
