@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -56,6 +57,10 @@ typedef struct GfxSaved {
     int line_width, stroke_location;
     int focus_ref;
     int full;
+    /* Current draw pattern (see GfxContext). */
+    uint8_t pattern[8], pattern_mask[8];
+    int pattern_fg, pattern_bg_paints, pattern_on;
+    int line_cap_style;
 } GfxSaved;
 
 typedef struct GfxContext {
@@ -66,6 +71,24 @@ typedef struct GfxContext {
     int focus_ref;
     int background_color;
     int stencil_ref;
+    /* Current draw pattern. setColor(), setPattern() and
+     * setDitherPattern() are mutually exclusive (Inside Playdate 7.20):
+     * setting one replaces the other, so only one of `color` and the
+     * pattern is live at a time; `pattern_on` says which.
+     * pattern[] holds the 8 row bytes of the 8x8 pattern (MSB-first,
+     * bit 1 = foreground pixel); pattern_mask[] holds an 8-row alpha
+     * mask (bit 1 = paint this pixel, 0 = leave it alone);
+     * pattern_fg is the colour painted where the pattern bit is 1
+     * (0 black / 1 white); pattern_bg_paints says whether a 0 bit
+     * paints the opposite colour (setPattern: fills paint both black
+     * and white pixels) or is transparent (setDitherPattern: only the
+     * dithered pixels are drawn). */
+    uint8_t pattern[8], pattern_mask[8];
+    int pattern_fg, pattern_bg_paints, pattern_on;
+    /* Line cap style for drawLine endpoints: 0 butt (flat), 1 square
+     * (extend by half the line width), 2 round (semicircle caps).
+     * SDK constants kLineCapStyleButt/Square/Round. */
+    int line_cap_style;
     GfxSaved stack[8];
     int stack_top;
 } GfxContext;
@@ -102,6 +125,8 @@ static void gfx_reset(void)
     gfx.stroke_location = 1;
     gfx.background_color = 1;
     gfx.stencil_ref = LUA_NOREF;
+    gfx.pattern_on = 0;
+    gfx.line_cap_style = 0;
 }
 
 /* Current graphics state, for image.c's image/tilemap drawing. */
@@ -146,6 +171,19 @@ static void gfx_put(int x, int y)
         return;
     if (x < 0 || y < 0 || x >= target->width || y >= target->height)
         return;
+    if (gfx.pattern_on) {
+        /* The pattern tiles every 8 pixels, anchored to the current
+         * target's origin (x, y are already post-offset here). */
+        int bit = 1 << (7 - (x & 7));
+        if (!(gfx.pattern_mask[y & 7] & bit))
+            return; /* transparent under the pattern */
+        if (gfx.pattern[y & 7] & bit) {
+            image_set_pixel(target, x, y, gfx.pattern_fg);
+        } else if (gfx.pattern_bg_paints) {
+            image_set_pixel(target, x, y, 1 - gfx.pattern_fg);
+        }
+        return;
+    }
     if (gfx.color == 3) {
         int current = image_pixel(target, x, y);
         image_set_pixel(target, x, y, current < 0 ? 0 : 1 - current);
@@ -170,22 +208,55 @@ static void set_buttons(unsigned *source, unsigned state)
     released |= before & ~after;
 }
 
+/* SDK: buttonIsPressed / buttonJustPressed / buttonJustReleased take a
+ * kButton* constant or one of the strings "a", "b", "up", "down", "left",
+ * "right" (Inside Playdate 6.9). Match case-insensitively: Frogger
+ * passes "A" on the title screen but "UP" / "LEFT" / "RIGHT" / "DOWN"
+ * (all caps) for movement, so a lower/Titlecase-only match silently
+ * drops every direction press. An unknown string matches nothing (the
+ * SDK fails silently on a typo'd string). */
+static unsigned check_button(lua_State *lua, int index)
+{
+    /* NB: lua_isstring() is also true for numbers, so test the type
+     * directly: a kButton* constant (an integer) must not fall into
+     * the string branch, where lua_tostring() would turn 32 into "32"
+     * and match nothing. That broke every game that passes constants
+     * (Celeste reads buttons only via kButtonA etc., so its title
+     * stopped responding to A entirely). */
+    if (lua_type(lua, index) == LUA_TSTRING) {
+        const char *name = lua_tostring(lua, index);
+        static const struct {
+            const char *name;
+            unsigned mask;
+        } buttons[] = {
+            {"a", 32}, {"b", 16}, {"up", 4},
+            {"down", 8}, {"left", 1}, {"right", 2},
+        };
+        for (size_t i = 0; i < sizeof buttons / sizeof *buttons; i++) {
+            if (strcasecmp(name, buttons[i].name) == 0)
+                return buttons[i].mask;
+        }
+        return 0;
+    }
+    return (unsigned)luaL_checkinteger(lua, index);
+}
+
 static int button_pressed(lua_State *lua)
 {
-    unsigned mask = (unsigned)luaL_checkinteger(lua, 1);
+    unsigned mask = check_button(lua, 1);
     lua_pushboolean(lua, ((physical | touch) & mask) != 0);
     return 1;
 }
 
 static int button_just_pressed(lua_State *lua)
 {
-    lua_pushboolean(lua, (pressed & (unsigned)luaL_checkinteger(lua, 1)) != 0);
+    lua_pushboolean(lua, (pressed & check_button(lua, 1)) != 0);
     return 1;
 }
 
 static int button_just_released(lua_State *lua)
 {
-    lua_pushboolean(lua, (released & (unsigned)luaL_checkinteger(lua, 1)) != 0);
+    lua_pushboolean(lua, (released & check_button(lua, 1)) != 0);
     return 1;
 }
 
@@ -201,6 +272,7 @@ static int set_color(lua_State *lua)
     if (color < 0 || color > 3)
         return luaL_argerror(lua, 1, "invalid color");
     gfx.color = color;
+    gfx.pattern_on = 0; /* setColor() replaces any pattern */
     return 0;
 }
 
@@ -217,6 +289,133 @@ static int get_background_color(lua_State *lua)
 {
     lua_pushinteger(lua, gfx.background_color);
     return 1;
+}
+
+/* One pixel of an image, as lua_image_get_pixel reports it: 0 black,
+ * 1 white, 2 clear (outside the image, outside the trimmed bitmap, or
+ * masked out). Used by the setPattern(image) form. */
+static int pattern_image_pixel(const Image *image, int x, int y)
+{
+    if (x < 0 || y < 0 || x >= image->width || y >= image->height)
+        return 2;
+    int sx = x - image->xoff, sy = y - image->yoff;
+    if (sx < 0 || sy < 0 || sx >= image->bw || sy >= image->bh)
+        return 2;
+    if (image->mask &&
+        !((image->mask[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1))
+        return 2;
+    int value = (image->bitmap[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1;
+    return image->inverted ? 1 - value : value;
+}
+
+/* SDK: playdate.graphics.setPattern(pattern) / setPattern(image, [x, y]).
+ * The table form is 8 numbers, one row byte each (bit set = white, MSB
+ * first); an optional second 8 numbers form an alpha mask. The image
+ * form takes the 8x8 block at (x, y) of the image (white pixel = set
+ * bit, anything else = clear bit, fully opaque mask). A set pattern
+ * replaces the current colour. Frogger calls the table form twice per
+ * frame (background band, timer bar). */
+static int set_pattern(lua_State *lua)
+{
+    if (image_is(lua, 1)) {
+        Image *image = image_check(lua, 1);
+        int ox = (int)luaL_optinteger(lua, 2, 0);
+        int oy = (int)luaL_optinteger(lua, 3, 0);
+        for (int row = 0; row < 8; row++) {
+            uint8_t bits = 0;
+            for (int col = 0; col < 8; col++)
+                if (pattern_image_pixel(image, ox + col, oy + row) == 1)
+                    bits |= (uint8_t)(1 << (7 - col));
+            gfx.pattern[row] = bits;
+            gfx.pattern_mask[row] = 0xff;
+        }
+    } else {
+        luaL_checktype(lua, 1, LUA_TTABLE);
+        lua_Integer len = lua_rawlen(lua, 1);
+        if (len < 8)
+            return luaL_argerror(lua, 1, "pattern needs 8 numbers");
+        for (int row = 0; row < 8; row++) {
+            lua_rawgeti(lua, 1, row + 1);
+            if (!lua_isinteger(lua, -1))
+                return luaL_argerror(lua, 1, "pattern entries must be integers");
+            gfx.pattern[row] = (uint8_t)(lua_tointeger(lua, -1) & 0xff);
+            lua_pop(lua, 1);
+            if (len >= 16) {
+                lua_rawgeti(lua, 1, row + 9);
+                if (!lua_isinteger(lua, -1))
+                    return luaL_argerror(lua, 1, "pattern mask entries must be integers");
+                gfx.pattern_mask[row] = (uint8_t)(lua_tointeger(lua, -1) & 0xff);
+                lua_pop(lua, 1);
+            } else {
+                gfx.pattern_mask[row] = 0xff;
+            }
+        }
+    }
+    gfx.pattern_fg = 1; /* bit set = white, bit clear = black */
+    gfx.pattern_bg_paints = 1;
+    gfx.pattern_on = 1;
+    return 0;
+}
+
+/* SDK: playdate.graphics.getPattern() — the current pattern as a table
+ * of 8 row bytes, or nil when a solid colour is set. For a dither
+ * pattern this is the computed 8x8 dither mask (bit 1 = drawn pixel). */
+static int get_pattern(lua_State *lua)
+{
+    if (!gfx.pattern_on) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_newtable(lua);
+    for (int row = 0; row < 8; row++) {
+        lua_pushinteger(lua, gfx.pattern[row]);
+        lua_rawseti(lua, -2, row + 1);
+    }
+    return 1;
+}
+
+/* SDK: playdate.graphics.setDitherPattern(alpha, [ditherType]).
+ * The dither type is one of playdate.graphics.image.kDitherType*
+ * (0 none, 1 diagonal line, 2 vertical line, 3 horizontal line,
+ * 4 screen, 5 Bayer 2x2, 6 Bayer 4x4, 7 Bayer 8x8; the error-diffusion
+ * types 8-10 are treated as Bayer 8x8, which the SDK itself calls
+ * "very unpredictable" here). The default type is Bayer 8x8.
+ * The pattern is computed from image_dither_value() (same thresholds
+ * as drawFaded): a pixel is drawn when dither_value < alpha for a
+ * black pattern, and when dither_value >= alpha for a white one —
+ * the SDK inverts alpha when the current colour is white (a known
+ * bug, kept: 1.0 transparent, 0 opaque). Only the dithered pixels
+ * are painted; the rest stay transparent. XTRIS uses this for its
+ * background (0.8), toast drop shadows (0.25) and menu pages (0.5),
+ * all Bayer 8x8. */
+static int set_dither_pattern(lua_State *lua)
+{
+    double alpha = luaL_checknumber(lua, 1);
+    int type = (int)luaL_optinteger(lua, 2, 7);
+    if (type < 0 || type > 10)
+        return luaL_argerror(lua, 2, "invalid dither type");
+    if (type >= 8)
+        type = 7; /* error-diffusion dithers: fall back to Bayer 8x8 */
+    if (alpha < 0)
+        alpha = 0;
+    if (alpha > 1)
+        alpha = 1;
+    int white = gfx.color == 1; /* current colour decides the dither colour */
+    for (int y = 0; y < 8; y++) {
+        uint8_t bits = 0;
+        for (int x = 0; x < 8; x++) {
+            double value = image_dither_value(type, x, y);
+            int drawn = white ? value >= alpha : value < alpha;
+            if (drawn)
+                bits |= (uint8_t)(1 << (7 - x));
+        }
+        gfx.pattern[y] = bits;
+        gfx.pattern_mask[y] = bits; /* only the dithered pixels paint */
+    }
+    gfx.pattern_fg = white ? 1 : 0;
+    gfx.pattern_bg_paints = 0;
+    gfx.pattern_on = 1;
+    return 0;
 }
 
 /* Fill a rectangle in the current target, applying the draw offset and
@@ -252,7 +451,9 @@ static int fill_rect(lua_State *lua)
     int bottom = clamp(y + height, target->height);
     if (right <= left || bottom <= top)
         return 0;
-    if (!target->packed && (gfx.color == 0 || gfx.color == 1)) {
+    /* The memset fast path paints a solid colour; a pattern must go
+     * through gfx_put so each pixel is looked up in the pattern. */
+    if (!gfx.pattern_on && !target->packed && (gfx.color == 0 || gfx.color == 1)) {
         for (int row = top; row < bottom; row++)
             memset(&target->bits[row * target->stride + left],
                    gfx.color, (size_t)(right - left));
@@ -281,20 +482,46 @@ static int draw_rect(lua_State *lua)
     return 0;
 }
 
+/* Plot one point of a stroked line, applying the line width as a
+ * square brush (the SDK's wide lines are square-ish; the brush is
+ * centred on the point). */
+static void fill_ellipse(int x, int y, int w, int h);
+
+static void draw_line_point(int x, int y)
+{
+    if (gfx.line_width <= 1) {
+        gfx_put(x, y);
+        return;
+    }
+    int half = gfx.line_width / 2;
+    for (int oy = -half; oy <= half; oy++)
+        for (int ox = -half; ox <= half; ox++)
+            gfx_put(x + ox, y + oy);
+}
+
 static void draw_line_points(int x, int y, int end_x, int end_y)
 {
+    int start_x = x, start_y = y;
+    /* Square caps extend the line by half the width at each end;
+     * round caps draw a disc of the line width at each end. */
+    if (gfx.line_cap_style == 1 && gfx.line_width > 1) {
+        double len = sqrt((double)(end_x - x) * (end_x - x) +
+                          (double)(end_y - y) * (end_y - y));
+        if (len > 0) {
+            int half = gfx.line_width / 2;
+            int ex = (int)llround((end_x - x) / len * half);
+            int ey = (int)llround((end_y - y) / len * half);
+            x -= ex;
+            y -= ey;
+            end_x += ex;
+            end_y += ey;
+        }
+    }
     int dx = abs(end_x - x), dy = -abs(end_y - y);
     int sx = x < end_x ? 1 : -1, sy = y < end_y ? 1 : -1;
     int error = dx + dy;
     for (;;) {
-        if (gfx.line_width <= 1) {
-            gfx_put(x, y);
-        } else {
-            int half = gfx.line_width / 2;
-            for (int oy = -half; oy <= half; oy++)
-                for (int ox = -half; ox <= half; ox++)
-                    gfx_put(x + ox, y + oy);
-        }
+        draw_line_point(x, y);
         if (x == end_x && y == end_y)
             break;
         int twice = 2 * error;
@@ -307,6 +534,146 @@ static void draw_line_points(int x, int y, int end_x, int end_y)
             y += sy;
         }
     }
+    if (gfx.line_cap_style == 2 && gfx.line_width > 1) {
+        int half = gfx.line_width / 2;
+        fill_ellipse(start_x - half, start_y - half, 2 * half + 1, 2 * half + 1);
+        fill_ellipse(end_x - half, end_y - half, 2 * half + 1, 2 * half + 1);
+    }
+}
+
+/* SDK: playdate.graphics.setLineCapStyle(style) / getLineCapStyle().
+ * 0 butt, 1 square, 2 round (kLineCapStyleButt/Square/Round). */
+static int set_line_cap_style(lua_State *lua)
+{
+    int style = luaL_checkinteger(lua, 1);
+    if (style < 0 || style > 2)
+        return luaL_argerror(lua, 1, "invalid line cap style");
+    gfx.line_cap_style = style;
+    return 0;
+}
+
+static int get_line_cap_style(lua_State *lua)
+{
+    lua_pushinteger(lua, gfx.line_cap_style);
+    return 1;
+}
+
+/* Read a rect argument: either 4 numbers (x, y, w, h) starting at
+ * `index`, or a playdate.geometry.rect at `index` with `radius` as
+ * the next argument. Returns the radius. */
+static double check_round_rect(lua_State *lua, int index,
+                               int *x, int *y, int *w, int *h)
+{
+    if (lua_isnumber(lua, index)) {
+        *x = check_coord(lua, index);
+        *y = check_coord(lua, index + 1);
+        *w = check_coord(lua, index + 2);
+        *h = check_coord(lua, index + 3);
+        return luaL_checknumber(lua, index + 4);
+    }
+    lua_getfield(lua, index, "x");
+    lua_getfield(lua, index, "y");
+    lua_getfield(lua, index, "w");
+    lua_getfield(lua, index, "h");
+    *x = (int)luaL_checknumber(lua, -4);
+    *y = (int)luaL_checknumber(lua, -3);
+    *w = (int)luaL_checknumber(lua, -2);
+    *h = (int)luaL_checknumber(lua, -1);
+    lua_pop(lua, 4);
+    return luaL_checknumber(lua, index + 1);
+}
+
+/* SDK: playdate.graphics.fillRoundRect(x, y, w, h, radius) /
+ * fillRoundRect(rect, radius). Row-scan fill: the middle rows span
+ * the full width; the corner rows shrink by the corner-circle
+ * half-chord. Same half-pixel convention as fill_ellipse. */
+static int fill_round_rect(lua_State *lua)
+{
+    int x, y, w, h;
+    double radius = check_round_rect(lua, 1, &x, &y, &w, &h);
+    if (w <= 0 || h <= 0)
+        return 0;
+    double r = radius;
+    if (r < 0)
+        r = 0;
+    if (r > w / 2.0)
+        r = w / 2.0;
+    if (r > h / 2.0)
+        r = h / 2.0;
+    for (int row = y; row < y + h; row++) {
+        double cy = row + 0.5;
+        int left = x, right = x + w - 1;
+        if (r > 0) {
+            double top_c = y + r, bot_c = y + h - r;
+            double dy = 0;
+            if (cy < top_c)
+                dy = top_c - cy;
+            else if (cy > bot_c)
+                dy = cy - bot_c;
+            if (dy > 0) {
+                double half = sqrt(r * r - dy * dy);
+                left = (int)ceil(x + r - half);
+                right = (int)floor(x + w - r + half);
+            }
+        }
+        for (int col = left; col <= right; col++)
+            gfx_put(col, row);
+    }
+    return 0;
+}
+
+/* SDK: playdate.graphics.drawRoundRect(x, y, w, h, radius) /
+ * drawRoundRect(rect, radius). Four straight edges plus four
+ * quarter-ellipse arcs sampled by angle. */
+static int draw_round_rect(lua_State *lua)
+{
+    int x, y, w, h;
+    double radius = check_round_rect(lua, 1, &x, &y, &w, &h);
+    if (w <= 0 || h <= 0)
+        return 0;
+    double r = radius;
+    if (r < 0)
+        r = 0;
+    if (r > w / 2.0)
+        r = w / 2.0;
+    if (r > h / 2.0)
+        r = h / 2.0;
+    int ir = (int)llround(r);
+    if (ir <= 0) {
+        /* No rounding: a plain rect outline. */
+        for (int col = x; col < x + w; col++) {
+            gfx_put(col, y);
+            gfx_put(col, y + h - 1);
+        }
+        for (int row = y + 1; row < y + h - 1; row++) {
+            gfx_put(x, row);
+            gfx_put(x + w - 1, row);
+        }
+        return 0;
+    }
+    /* Straight edges, inset by the radius. */
+    draw_line_points(x + ir, y, x + w - ir, y);
+    draw_line_points(x + ir, y + h - 1, x + w - ir, y + h - 1);
+    draw_line_points(x, y + ir, x, y + h - ir);
+    draw_line_points(x + w - 1, y + ir, x + w - 1, y + h - ir);
+    /* Quarter arcs: sample every ~4 degrees, more for large radii. */
+    int steps = ir * 2 + 8;
+    if (steps < 12)
+        steps = 12;
+    if (steps > 64)
+        steps = 64;
+    double cx[4] = {x + r, x + w - r, x + w - r, x + r};
+    double cy[4] = {y + r, y + r, y + h - r, y + h - r};
+    double start[4] = {180, 270, 0, 90};
+    for (int corner = 0; corner < 4; corner++) {
+        for (int i = 0; i <= steps; i++) {
+            double angle = (start[corner] + 90.0 * i / steps) * 3.141592653589793 / 180.0;
+            int px = (int)llround(cx[corner] + r * cos(angle));
+            int py = (int)llround(cy[corner] + r * sin(angle));
+            draw_line_point(px, py);
+        }
+    }
+    return 0;
 }
 
 static int draw_line(lua_State *lua)
@@ -500,7 +867,15 @@ static void gfx_focus_image(lua_State *lua, Image *image, int index)
 
 static int push_context(lua_State *lua, int full)
 {
-    Image *image = image_check(lua, 1);
+    /* SDK: pushContext([image]) — with no image (or nil) the target
+     * stays the display framebuffer; the call only saves the graphics
+     * state (and, for pushContext, resets it). XTRIS's background()
+     * does exactly this: pushContext() with no argument, dither-fill
+     * the screen, popContext(). Previously image_check() rejected the
+     * missing argument with "image expected". */
+    Image *image = NULL;
+    if (!lua_isnoneornil(lua, 1))
+        image = image_check(lua, 1);
     if (gfx.stack_top >= (int)(sizeof gfx.stack / sizeof *gfx.stack))
         return luaL_error(lua, "graphics context stack overflow");
     GfxSaved *saved = &gfx.stack[gfx.stack_top++];
@@ -517,7 +892,20 @@ static int push_context(lua_State *lua, int full)
     saved->stroke_location = gfx.stroke_location;
     saved->focus_ref = gfx.focus_ref;
     saved->full = full;
-    gfx_focus_image(lua, image, 1);
+    memcpy(saved->pattern, gfx.pattern, sizeof gfx.pattern);
+    memcpy(saved->pattern_mask, gfx.pattern_mask, sizeof gfx.pattern_mask);
+    saved->pattern_fg = gfx.pattern_fg;
+    saved->pattern_bg_paints = gfx.pattern_bg_paints;
+    saved->pattern_on = gfx.pattern_on;
+    saved->line_cap_style = gfx.line_cap_style;
+    if (image) {
+        gfx_focus_image(lua, image, 1);
+    } else {
+        /* No new target: leave gfx.target alone and clear the focus
+         * ref so pop_context() does not unref the outer context's
+         * image ref (which the saved entry still holds). */
+        gfx.focus_ref = LUA_NOREF;
+    }
     if (full) {
         gfx.color = 1;
         gfx.draw_mode = 0;
@@ -526,6 +914,8 @@ static int push_context(lua_State *lua, int full)
         gfx.clip_w = gfx.clip_h = -1;
         gfx.line_width = 1;
         gfx.stroke_location = 1;
+        gfx.pattern_on = 0;
+        gfx.line_cap_style = 0;
     }
     return 0;
 }
@@ -552,6 +942,12 @@ static int pop_context(lua_State *lua)
     gfx.line_width = saved->line_width;
     gfx.stroke_location = saved->stroke_location;
     gfx.focus_ref = saved->focus_ref;
+    memcpy(gfx.pattern, saved->pattern, sizeof gfx.pattern);
+    memcpy(gfx.pattern_mask, saved->pattern_mask, sizeof gfx.pattern_mask);
+    gfx.pattern_fg = saved->pattern_fg;
+    gfx.pattern_bg_paints = saved->pattern_bg_paints;
+    gfx.pattern_on = saved->pattern_on;
+    gfx.line_cap_style = saved->line_cap_style;
     return 0;
 }
 
@@ -593,9 +989,9 @@ static int draw_text_stub(lua_State *lua)
 
 static int get_text_size(lua_State *lua)
 {
-    (void)luaL_checkstring(lua, 1);
-    lua_pushinteger(lua, 0);
-    lua_pushinteger(lua, 0);
+    const char *text = luaL_checkstring(lua, 1);
+    lua_pushinteger(lua, text_width_estimate(text));
+    lua_pushinteger(lua, 16);
     return 2;
 }
 
@@ -742,6 +1138,8 @@ void card_lua_init(lua_State *lua)
 {
     static const luaL_Reg graphics[] = {
         {"clear", clear_frame}, {"setColor", set_color}, {"fillRect", fill_rect},
+        {"setPattern", set_pattern}, {"getPattern", get_pattern},
+        {"setDitherPattern", set_dither_pattern},
         {"drawLine", draw_line}, {"drawRect", draw_rect},
         {"drawCircleAtPoint", draw_circle_at_point},
         {"fillCircleAtPoint", fill_circle_at_point},
@@ -750,6 +1148,10 @@ void card_lua_init(lua_State *lua)
         {"drawCircleInRect", draw_ellipse_in_rect},
         {"fillCircleInRect", fill_ellipse_in_rect},
         {"setLineWidth", set_line_width}, {"getLineWidth", get_line_width},
+        {"setLineCapStyle", set_line_cap_style},
+        {"getLineCapStyle", get_line_cap_style},
+        {"fillRoundRect", fill_round_rect},
+        {"drawRoundRect", draw_round_rect},
         {"setStrokeLocation", set_stroke_location},
         {"getStrokeLocation", get_stroke_location},
         {"setBackgroundColor", set_background_color},
@@ -829,6 +1231,12 @@ void card_lua_init(lua_State *lua)
     lua_setfield(lua, -2, "kStrokeCentered");
     lua_pushinteger(lua, 2);
     lua_setfield(lua, -2, "kStrokeOutside");
+    lua_pushinteger(lua, 0);
+    lua_setfield(lua, -2, "kLineCapStyleButt");
+    lua_pushinteger(lua, 1);
+    lua_setfield(lua, -2, "kLineCapStyleSquare");
+    lua_pushinteger(lua, 2);
+    lua_setfield(lua, -2, "kLineCapStyleRound");
     lua_setfield(lua, -2, "graphics");
     luaL_newlib(lua, display);
     lua_setfield(lua, -2, "display");
@@ -1016,7 +1424,13 @@ static int run_library(int fd, Display *display)
         }
 
         int launch = 0, library = 0, quit = 0, get_games = 0;
-        while (now_ms() < start + 33 && !launch && !library && !quit && !get_games) {
+        /* do-while, not while: the poll must run at least once per frame
+         * even when the update overran the 33 ms budget. With a plain
+         * while, a slow game (Frogger's title took ~57 ms/frame before
+         * drawRotated was fixed-point) never entered the poll at all, so
+         * no key or touch ever reached it. An overrun frame still polls
+         * once with timeout 0 and drains one pending message. */
+        do {
             struct pollfd input = {.fd = fd, .events = POLLIN};
             int64_t remaining = start + 33 - now_ms();
             int ready = poll(&input, 1, remaining > 0 ? (int)remaining : 0);
@@ -1123,7 +1537,7 @@ static int run_library(int fd, Display *display)
                         move_selection(&picker, x < 107 ? -1 : 1);
                 }
             }
-        }
+        } while (now_ms() < start + 33 && !launch && !library && !quit && !get_games);
         if (quit)
             break;
         if (library) {

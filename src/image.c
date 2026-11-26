@@ -496,6 +496,60 @@ Image *image_scaled_copy(const Image *src, double xscale, double yscale)
     return copy;
 }
 
+/* SDK: image:rotatedImage(rotation, [xscale, [yscale, [centerx,
+ * [centery]]]]) — a new image holding the source rotated by rotation
+ * degrees (positive = clockwise, y points down) about (centerx,
+ * centery) in the source (default: the image center), optionally
+ * scaled. Sized to the rotated bounding box. Implemented by rendering
+ * through image_blit_rotated (the same Q16.16 sampler as drawRotated),
+ * with the target centre computed so the source centre lands where
+ * the rotation about (centerx, centery) puts it. XTRIS rotates its
+ * title-page affordance icons by +/-90 degrees. */
+Image *image_rotated_copy(const Image *src, double angle_deg,
+                          double xscale, double yscale,
+                          double centerx, double centery)
+{
+    if (!src || xscale <= 0 || yscale <= 0)
+        return NULL;
+    double angle = angle_deg * 3.14159265358979323846 / 180.0;
+    double cos_a = cos(angle), sin_a = sin(angle);
+    /* Scaled source rect, rotated about (cx, cy) in scaled coords. */
+    double w = src->width * xscale, h = src->height * yscale;
+    double cx = centerx * xscale, cy = centery * yscale;
+    double corners[4][2] = {{0, 0}, {w, 0}, {w, h}, {0, h}};
+    double minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+    for (int i = 0; i < 4; i++) {
+        double dx = corners[i][0] - cx, dy = corners[i][1] - cy;
+        double rx = cx + dx * cos_a - dy * sin_a;
+        double ry = cy + dx * sin_a + dy * cos_a;
+        if (rx < minx) minx = rx;
+        if (rx > maxx) maxx = rx;
+        if (ry < miny) miny = ry;
+        if (ry > maxy) maxy = ry;
+    }
+    int tw = (int)ceil(maxx - minx), th = (int)ceil(maxy - miny);
+    if (tw <= 0 || th <= 0 || tw > 4096 || th > 4096)
+        return NULL;
+    Image *copy = image_new_blank(tw, th, 2);
+    if (!copy)
+        return NULL;
+    /* The source centre maps to T = (-minx, -miny) + R(S - C). */
+    double sdx = w / 2.0 - cx, sdy = h / 2.0 - cy;
+    double tx = -minx + sdx * cos_a - sdy * sin_a;
+    double ty = -miny + sdx * sin_a + sdy * cos_a;
+    DrawTarget target;
+    target.bits = copy->bitmap;
+    target.mask = copy->mask;
+    target.width = tw;
+    target.height = th;
+    target.stride = copy->rowbytes;
+    target.packed = 1;
+    target.screen = 0;
+    image_blit_rotated(&target, src, (int)llround(tx), (int)llround(ty),
+                       angle_deg, xscale, yscale, 0, 0, 0, 1, 0, 0, -1, -1);
+    return copy;
+}
+
 /* --- Pixel access and blitting ----------------------------------------- */
 
 int image_pixel(const DrawTarget *target, int x, int y)
@@ -690,6 +744,66 @@ void image_blit_scaled(DrawTarget *target, const Image *image, int x, int y,
     }
 }
 
+/* Nearest Q16.16 fixed-point value, rounding half up (portable for
+ * negative values, where >> is implementation-defined). */
+static int fixed_nearest(int32_t value)
+{
+    if (value >= 0)
+        return (int)((value + 32768) >> 16);
+    return -((int)((-value + 32767) >> 16));
+}
+
+void image_blit_rotated(DrawTarget *target, const Image *image, int x, int y,
+                        double angle_deg, double xscale, double yscale,
+                        int draw_mode,
+                        int offset_x, int offset_y, int ignore_offset,
+                        int clip_x, int clip_y, int clip_w, int clip_h)
+{
+    if (!target || !image || xscale <= 0 || yscale <= 0)
+        return;
+    /* SDK: drawRotated draws the image centered at (x, y), rotated by
+     * angle degrees (positive = clockwise on screen, y points down).
+     * Inverse-map each destination pixel to the nearest source pixel;
+     * source_pixel handles the trim offset, mask and setInverted.
+     * The inner loop is Q16.16 fixed-point (integer adds only): the
+     * Q2's soft-float MIPS CPU made the per-pixel double division cost
+     * ~57 ms/frame on Frogger's 355x155 logo, starving the input poll.
+     * The bounds are the AABB of the rotated corners, much tighter than
+     * the half-diagonal circle bound for small angles. */
+    double angle = angle_deg * 3.14159265358979323846 / 180.0;
+    double cos_a = cos(angle), sin_a = sin(angle);
+    double hw = image->width / 2.0, hh = image->height / 2.0;
+    int rx = (int)ceil((fabs(cos_a) * hw + fabs(sin_a) * hh) * xscale);
+    int ry = (int)ceil((fabs(sin_a) * hw + fabs(cos_a) * hh) * yscale);
+    /* Inverse rotation + scale as Q16.16 coefficients. */
+    int32_t ca = (int32_t)(cos_a / xscale * 65536.0);
+    int32_t sa = (int32_t)(sin_a / xscale * 65536.0);
+    int32_t cb = (int32_t)(-sin_a / yscale * 65536.0);
+    int32_t db = (int32_t)(cos_a / yscale * 65536.0);
+    int32_t cx = (int32_t)(((image->width - 1) / 2.0) * 65536.0);
+    int32_t cy = (int32_t)(((image->height - 1) / 2.0) * 65536.0);
+    for (int oy = -ry; oy <= ry; oy++) {
+        /* Source coords of the row's first pixel, then step by (ca, cb). */
+        int32_t xacc = ca * (-rx) + sa * oy + cx;
+        int32_t yacc = cb * (-rx) + db * oy + cy;
+        for (int ox = -rx; ox <= rx; ox++) {
+            int value = source_pixel(image, fixed_nearest(xacc) - image->xoff,
+                                     fixed_nearest(yacc) - image->yoff);
+            if (value >= 0) {
+                int ddx = x + ox, ddy = y + oy;
+                if (target->screen && !ignore_offset) {
+                    ddx -= offset_x;
+                    ddy -= offset_y;
+                }
+                put_pixel(target, ddx, ddy, value, draw_mode,
+                          clip_x, clip_y, clip_w, clip_h);
+            }
+            xacc += ca;
+            yacc += cb;
+        }
+    }
+}
+
 void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
                       double alpha, int dither, int draw_mode,
                       int offset_x, int offset_y, int ignore_offset,
@@ -728,14 +842,21 @@ void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
 #define REG_TILEMAP "q2.graphics.tilemap.table"
 #define REG_FONT "q2.graphics.font.table"
 #define REG_RECT "q2.geometry.rect.table"
+#define REG_POINT "q2.geometry.point.table"
 
 typedef struct Font {
     char path[256];
+    int tracking; /* setTracking value; text is not rendered, so this
+                     is stored and returned but has no visual effect */
 } Font;
 
 typedef struct Rect {
     double x, y, w, h;
 } Rect;
+
+typedef struct Point {
+    double x, y;
+} Point;
 
 static void *check_udata(lua_State *lua, int index, const char *regkey,
                          const char *what)
@@ -876,6 +997,15 @@ static int lua_image_new(lua_State *lua)
     int width = luaL_checkinteger(lua, 1);
     int height = luaL_checkinteger(lua, 2);
     int color = luaL_optinteger(lua, 3, 2);
+    /* A 0 dimension is clamped to 1: the SDK's simulator rejects a
+     * 0-size bitmap, but the device tolerates it, and games size
+     * scratch images from text widths that can be 0 (an empty label).
+     * A 1x1 image draws nothing. Negative or >4096 sizes still error
+     * in image_new_blank. */
+    if (width == 0)
+        width = 1;
+    if (height == 0)
+        height = 1;
     Image *image = image_new_blank(width, height, color);
     if (!image)
         return luaL_error(lua, "invalid image size %dx%d", width, height);
@@ -884,27 +1014,146 @@ static int lua_image_new(lua_State *lua)
     return 1;
 }
 
+/* One pixel of an image, as getPixel reports it: 0 black, 1 white,
+ * 2 clear (outside the image, outside the trimmed bitmap, or masked
+ * out). Shared by getPixel and setMaskImage. */
+static int image_pixel_value(const Image *image, int x, int y)
+{
+    if (x < 0 || y < 0 || x >= image->width || y >= image->height)
+        return 2;
+    int sx = x - image->xoff, sy = y - image->yoff;
+    if (sx < 0 || sy < 0 || sx >= image->bw || sy >= image->bh)
+        return 2;
+    if (image->mask &&
+        !((image->mask[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1))
+        return 2;
+    int value = (image->bitmap[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1;
+    return image->inverted ? 1 - value : value;
+}
+
 static int lua_image_get_pixel(lua_State *lua)
 {
     Image *image = image_check(lua, 1);
     int x = luaL_checkinteger(lua, 2);
     int y = luaL_checkinteger(lua, 3);
     if (x < 0 || y < 0 || x >= image->width || y >= image->height) {
+        lua_pushnil(lua); /* outside the image */
+        return 1;
+    }
+    lua_pushinteger(lua, image_pixel_value(image, x, y));
+    return 1;
+}
+
+/* --- Image masks (Inside Playdate, "Image masks") ---------------------- */
+/* Transparency is a 1-bit mask plane beside the bitmap (Image.mask,
+ * NULL = fully opaque). XTRIS's achievement toasts use addMask(true),
+ * hasMask() and setMaskImage() on their icon images. */
+
+static int lua_image_add_mask(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    /* SDK: addMask([opaque]) adds a mask if the image doesn't already
+     * have one. opaque true (or omitted) = fully white/opaque mask;
+     * false = fully black/transparent. */
+    int opaque = lua_isnoneornil(lua, 2) ? 1 : lua_toboolean(lua, 2);
+    if (image->mask)
+        return 0;
+    size_t bytes = (size_t)image->bh * image->rowbytes;
+    image->mask = malloc(bytes);
+    if (!image->mask)
+        return luaL_error(lua, "out of memory");
+    memset(image->mask, opaque ? 0xff : 0x00, bytes);
+    return 0;
+}
+
+static int lua_image_remove_mask(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    free(image->mask);
+    image->mask = NULL;
+    return 0;
+}
+
+static int lua_image_has_mask(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    lua_pushboolean(lua, image->mask != NULL);
+    return 1;
+}
+
+static int lua_image_clear_mask(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    /* SDK: clearMask([opaque]) erases the mask; opaque (default
+     * false) = entirely opaque, otherwise entirely transparent. */
+    int opaque = lua_isnoneornil(lua, 2) ? 0 : lua_toboolean(lua, 2);
+    if (!image->mask)
+        return 0;
+    memset(image->mask, opaque ? 0xff : 0x00,
+           (size_t)image->bh * image->rowbytes);
+    return 0;
+}
+
+static int lua_image_set_mask_image(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    Image *mask = image_check(lua, 2);
+    if (mask->width != image->width || mask->height != image->height)
+        return luaL_error(lua, "mask must be the same size as the image");
+    size_t bytes = (size_t)image->bh * image->rowbytes;
+    if (!image->mask) {
+        image->mask = malloc(bytes);
+        if (!image->mask)
+            return luaL_error(lua, "out of memory");
+    }
+    /* The mask plane lives in the target's bitmap space (bw x bh at
+     * xoff/yoff); sample the mask image at the matching logical
+     * coordinates. A white mask pixel is opaque; black or clear is
+     * transparent. The mask image's own mask is honoured. */
+    for (int sy = 0; sy < image->bh; sy++) {
+        for (int sx = 0; sx < image->bw; sx++) {
+            int bit = image_pixel_value(mask, sx + image->xoff,
+                                        sy + image->yoff) == 1;
+            uint8_t *byte = &image->mask[sy * image->rowbytes + sx / 8];
+            if (bit)
+                *byte |= (uint8_t)(1 << (7 - sx % 8));
+            else
+                *byte &= (uint8_t)~(1 << (7 - sx % 8));
+        }
+    }
+    return 0;
+}
+
+static int lua_image_get_mask_image(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    if (!image->mask) {
         lua_pushnil(lua);
         return 1;
     }
-    int sx = x - image->xoff, sy = y - image->yoff;
-    if (sx < 0 || sy < 0 || sx >= image->bw || sy >= image->bh) {
-        lua_pushinteger(lua, 2); /* outside the trimmed bitmap: clear */
-        return 1;
+    /* The SDK returns a view sharing the mask data, so drawing into
+     * it alters the original's mask. Ours returns a copy (same size
+     * and trim, bitmap = the mask plane); drawing into it does not
+     * affect the original. No game in the test set uses it. */
+    Image *copy = calloc(1, sizeof *copy);
+    if (!copy)
+        return luaL_error(lua, "out of memory");
+    copy->width = image->width;
+    copy->height = image->height;
+    copy->bw = image->bw;
+    copy->bh = image->bh;
+    copy->xoff = image->xoff;
+    copy->yoff = image->yoff;
+    copy->rowbytes = image->rowbytes;
+    size_t bytes = (size_t)image->bh * image->rowbytes;
+    copy->bitmap = malloc(bytes);
+    if (!copy->bitmap) {
+        free(copy);
+        return luaL_error(lua, "out of memory");
     }
-    if (image->mask &&
-        !((image->mask[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1)) {
-        lua_pushinteger(lua, 2);
-        return 1;
-    }
-    int value = (image->bitmap[sy * image->rowbytes + sx / 8] >> (7 - sx % 8)) & 1;
-    lua_pushinteger(lua, image->inverted ? 1 - value : value);
+    memcpy(copy->bitmap, image->mask, bytes);
+    image_push(lua, copy);
+    free(copy);
     return 1;
 }
 
@@ -963,6 +1212,22 @@ static int lua_image_draw_scaled(lua_State *lua)
     current_state(&target, &mode, &ox, &oy, &cx, &cy, &cw, &ch);
     image_blit_scaled(target, image, x, y, xscale, yscale, mode, ox, oy, 0,
                       cx, cy, cw, ch);
+    return 0;
+}
+
+static int lua_image_draw_rotated(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    int x = check_coord(lua, 2);
+    int y = check_coord(lua, 3);
+    double angle = luaL_checknumber(lua, 4);
+    double xscale = luaL_optnumber(lua, 5, 1.0);
+    double yscale = luaL_optnumber(lua, 6, xscale);
+    DrawTarget *target;
+    int mode, ox, oy, cx, cy, cw, ch;
+    current_state(&target, &mode, &ox, &oy, &cx, &cy, &cw, &ch);
+    image_blit_rotated(target, image, x, y, angle, xscale, yscale, mode,
+                       ox, oy, 0, cx, cy, cw, ch);
     return 0;
 }
 
@@ -1048,6 +1313,25 @@ static int lua_image_scaled_image(lua_State *lua)
     return 1;
 }
 
+static int lua_image_rotated_image(lua_State *lua)
+{
+    Image *image = image_check(lua, 1);
+    double angle = luaL_checknumber(lua, 2);
+    double xscale = luaL_optnumber(lua, 3, 1);
+    double yscale = luaL_optnumber(lua, 4, xscale);
+    /* Default centre is the image centre in the same convention as
+     * drawRotated: (width-1)/2, (height-1)/2. */
+    double centerx = luaL_optnumber(lua, 5, (image->width - 1) / 2.0);
+    double centery = luaL_optnumber(lua, 6, (image->height - 1) / 2.0);
+    Image *copy = image_rotated_copy(image, angle, xscale, yscale,
+                                     centerx, centery);
+    if (!copy)
+        return luaL_error(lua, "invalid rotation");
+    image_push(lua, copy);
+    free(copy);
+    return 1;
+}
+
 static const luaL_Reg image_methods[] = {
     {"new", lua_image_new},
     {"getSize", lua_image_get_size},
@@ -1055,14 +1339,22 @@ static const luaL_Reg image_methods[] = {
     {"draw", lua_image_draw},
     {"drawIgnoringOffset", lua_image_draw_ignoring_offset},
     {"drawScaled", lua_image_draw_scaled},
+    {"drawRotated", lua_image_draw_rotated},
     {"drawFaded", lua_image_draw_faded},
     {"setInverted", lua_image_set_inverted},
     {"getInverted", lua_image_get_inverted},
     {"clear", lua_image_clear},
     {"copy", lua_image_copy},
+    {"addMask", lua_image_add_mask},
+    {"removeMask", lua_image_remove_mask},
+    {"hasMask", lua_image_has_mask},
+    {"clearMask", lua_image_clear_mask},
+    {"setMaskImage", lua_image_set_mask_image},
+    {"getMaskImage", lua_image_get_mask_image},
     {"invertedImage", lua_image_inverted_image},
     {"fadedImage", lua_image_faded_image},
     {"scaledImage", lua_image_scaled_image},
+    {"rotatedImage", lua_image_rotated_image},
     {NULL, NULL},
 };
 
@@ -1132,10 +1424,42 @@ static int lua_imagetable_get_length(lua_State *lua)
     return 1;
 }
 
+/* SDK: imagetable:drawImage(index, x, y [, flip]) — draws one cell at
+ * (x, y), applying the current draw mode / offset / clip like
+ * image:draw. XTRIS's stats page calls g_arrow_icons:drawImage(1, 330,
+ * 84) from draw() and fails without it. Out-of-range index is an error,
+ * matching the SDK (unlike getImage, which returns nil). */
+static int lua_imagetable_draw_image(lua_State *lua)
+{
+    Imagetable *table = imagetable_check(lua, 1);
+    int index = luaL_checkinteger(lua, 2);
+    int x = check_coord(lua, 3);
+    int y = check_coord(lua, 4);
+    int flip = luaL_optinteger(lua, 5, 0);
+    if (index < 1 || index > table->count)
+        return luaL_error(lua, "imagetable index out of range");
+    DrawTarget *target;
+    int mode, ox, oy, cx, cy, cw, ch;
+    current_state(&target, &mode, &ox, &oy, &cx, &cy, &cw, &ch);
+    image_blit(target, &table->cells[index - 1], x, y, flip, mode, ox, oy, 0,
+               cx, cy, cw, ch);
+    return 0;
+}
+
+/* SDK: #imagetable is the cell count. CoreLibs/animation.lua does
+ * `endFrame = #imagetable`, so the length operator must work on the
+ * userdata (via the __len metamethod on its methods table). */
+static int lua_imagetable_len(lua_State *lua)
+{
+    return lua_imagetable_get_length(lua);
+}
+
 static const luaL_Reg imagetable_methods[] = {
     {"new", lua_imagetable_new},
     {"getImage", lua_imagetable_get_image},
+    {"drawImage", lua_imagetable_draw_image},
     {"getLength", lua_imagetable_get_length},
+    {"__len", lua_imagetable_len},
     {NULL, NULL},
 };
 
@@ -1361,7 +1685,7 @@ static int lua_font_new(lua_State *lua)
         lua_pushfstring(lua, "font file not found: %s", path);
         return 2;
     }
-    Font font;
+    Font font = {0};
     snprintf(font.path, sizeof font.path, "%s", path);
     push_udata(lua, REG_FONT, &font, sizeof font);
     return 1;
@@ -1387,20 +1711,51 @@ static int lua_font_set_leading(lua_State *lua)
     return 0;
 }
 
+/* SDK: font:setTracking(tracking) / font:getTracking(). XTRIS's
+ * achievement toasts call m.fonts.status:setTracking(1) at load.
+ * Text is not rendered (drawText is a stub), so the value is stored
+ * and returned but has no visual effect. */
+static int lua_font_set_tracking(lua_State *lua)
+{
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    font->tracking = (int)luaL_checkinteger(lua, 2);
+    return 0;
+}
+
+static int lua_font_get_tracking(lua_State *lua)
+{
+    Font *font = check_udata(lua, 1, REG_FONT, "font expected");
+    lua_pushinteger(lua, font->tracking);
+    return 1;
+}
+
+/* Text measurement is an estimate: fonts are not rendered, so there
+ * are no real glyph metrics. 8 px per character at the 16 px font
+ * height is close to the system font's average advance, and it keeps
+ * text-sizing code (image.new(getTextWidth(t), h)) from producing a
+ * 0-width image, which the SDK rejects. Counts UTF-8 code points,
+ * not bytes. */
+int text_width_estimate(const char *s)
+{
+    size_t chars = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if ((*p & 0xc0) != 0x80)
+            chars++;
+    return (int)(chars * 8);
+}
+
 static int lua_font_get_text_width(lua_State *lua)
 {
     check_udata(lua, 1, REG_FONT, "font expected");
-    (void)luaL_checkstring(lua, 2);
-    lua_pushinteger(lua, 0);
+    lua_pushinteger(lua, text_width_estimate(luaL_checkstring(lua, 2)));
     return 1;
 }
 
 static int lua_font_get_text_size(lua_State *lua)
 {
     check_udata(lua, 1, REG_FONT, "font expected");
-    (void)luaL_checkstring(lua, 2);
-    lua_pushinteger(lua, 0);
-    lua_pushinteger(lua, 0);
+    lua_pushinteger(lua, text_width_estimate(luaL_checkstring(lua, 2)));
+    lua_pushinteger(lua, 16);
     return 2;
 }
 
@@ -1422,6 +1777,8 @@ static const luaL_Reg font_methods[] = {
     {"getHeight", lua_font_get_height},
     {"getLeading", lua_font_get_leading},
     {"setLeading", lua_font_set_leading},
+    {"setTracking", lua_font_set_tracking},
+    {"getTracking", lua_font_get_tracking},
     {"getTextWidth", lua_font_get_text_width},
     {"getTextSize", lua_font_get_text_size},
     {"drawText", lua_font_draw_text},
@@ -1722,6 +2079,170 @@ static const luaL_Reg rect_methods[] = {
     {NULL, NULL},
 };
 
+/* --- playdate.geometry.point ------------------------------------------- */
+/* SDK: playdate.geometry.point.new(x, y); fields x, y (mutable);
+ * methods unpack() and offsetBy(dx, dy) (returns a new point).
+ * XTRIS's game manager keeps its draw offset as a point and calls
+ * draw_offset:unpack() every frame. */
+
+static void point_push(lua_State *lua, double x, double y)
+{
+    Point *point = lua_newuserdata(lua, sizeof *point);
+    point->x = x;
+    point->y = y;
+    lua_getfield(lua, LUA_REGISTRYINDEX, REG_POINT);
+    lua_setmetatable(lua, -2);
+}
+
+static int lua_point_gc(lua_State *lua)
+{
+    (void)lua;
+    return 0;
+}
+
+static int lua_point_new(lua_State *lua)
+{
+    double x = luaL_checknumber(lua, 1);
+    double y = luaL_checknumber(lua, 2);
+    point_push(lua, x, y);
+    return 1;
+}
+
+static int lua_point_unpack(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    lua_pushnumber(lua, point->x);
+    lua_pushnumber(lua, point->y);
+    return 2;
+}
+
+static int lua_point_offset_by(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    double dx = luaL_checknumber(lua, 2);
+    double dy = luaL_checknumber(lua, 3);
+    point_push(lua, point->x + dx, point->y + dy);
+    return 1;
+}
+
+static int lua_point_copy(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    point_push(lua, point->x, point->y);
+    return 1;
+}
+
+/* Arithmetic metamethods. The SDK's point type supports these, and
+ * CoreLibs/animator.lua interpolates point values with
+ * start + (end - start) * t, so a game animating a point (XTRIS's menu
+ * slide) fails without them. Add/sub are point-point; mul/div take a
+ * number on either side; unm negates; eq compares coordinates. */
+static Point *point_arg(lua_State *lua, int index)
+{
+    if (lua_isuserdata(lua, index))
+        return check_udata(lua, index, REG_POINT, "point expected");
+    return NULL;
+}
+
+static int lua_point_add(lua_State *lua)
+{
+    Point *a = point_arg(lua, 1), *b = point_arg(lua, 2);
+    if (!a || !b)
+        return luaL_error(lua, "point addition needs two points");
+    point_push(lua, a->x + b->x, a->y + b->y);
+    return 1;
+}
+
+static int lua_point_sub(lua_State *lua)
+{
+    Point *a = point_arg(lua, 1), *b = point_arg(lua, 2);
+    if (!a || !b)
+        return luaL_error(lua, "point subtraction needs two points");
+    point_push(lua, a->x - b->x, a->y - b->y);
+    return 1;
+}
+
+static int lua_point_mul(lua_State *lua)
+{
+    Point *point = point_arg(lua, 1);
+    if (point) {
+        double n = luaL_checknumber(lua, 2);
+        point_push(lua, point->x * n, point->y * n);
+        return 1;
+    }
+    point = point_arg(lua, 2);
+    if (point) {
+        double n = luaL_checknumber(lua, 1);
+        point_push(lua, point->x * n, point->y * n);
+        return 1;
+    }
+    return luaL_error(lua, "point multiplication needs a point and a number");
+}
+
+static int lua_point_div(lua_State *lua)
+{
+    Point *point = point_arg(lua, 1);
+    if (!point)
+        return luaL_error(lua, "point division needs a point and a number");
+    double n = luaL_checknumber(lua, 2);
+    point_push(lua, point->x / n, point->y / n);
+    return 1;
+}
+
+static int lua_point_unm(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    point_push(lua, -point->x, -point->y);
+    return 1;
+}
+
+static int lua_point_eq(lua_State *lua)
+{
+    Point *a = point_arg(lua, 1), *b = point_arg(lua, 2);
+    lua_pushboolean(lua, a && b && a->x == b->x && a->y == b->y);
+    return 1;
+}
+
+static int lua_point_index(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    const char *key = luaL_checkstring(lua, 2);
+    if (strcmp(key, "x") == 0) {
+        lua_pushnumber(lua, point->x);
+        return 1;
+    }
+    if (strcmp(key, "y") == 0) {
+        lua_pushnumber(lua, point->y);
+        return 1;
+    }
+    lua_getfield(lua, LUA_REGISTRYINDEX, REG_POINT);
+    lua_pushvalue(lua, 2);
+    lua_gettable(lua, -2);
+    return 1;
+}
+
+static int lua_point_newindex(lua_State *lua)
+{
+    Point *point = check_udata(lua, 1, REG_POINT, "point expected");
+    const char *key = luaL_checkstring(lua, 2);
+    double value = luaL_checknumber(lua, 3);
+    if (strcmp(key, "x") == 0)
+        point->x = value;
+    else if (strcmp(key, "y") == 0)
+        point->y = value;
+    else
+        return luaL_error(lua, "unknown point field %s", key);
+    return 0;
+}
+
+static const luaL_Reg point_methods[] = {
+    {"new", lua_point_new},
+    {"unpack", lua_point_unpack},
+    {"offsetBy", lua_point_offset_by},
+    {"copy", lua_point_copy},
+    {NULL, NULL},
+};
+
 /* --- Installation -------------------------------------------------------- */
 
 /* Make a table that doubles as a metatable: __index = itself, plus __gc. */
@@ -1822,5 +2343,30 @@ void image_install(lua_State *lua)
     lua_pushvalue(lua, -1);
     lua_setfield(lua, LUA_REGISTRYINDEX, REG_RECT);
     lua_setfield(lua, -2, "rect");
+
+    /* playdate.geometry.point */
+    lua_newtable(lua);
+    luaL_setfuncs(lua, point_methods, 0);
+    lua_pushcfunction(lua, lua_point_index);
+    lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, lua_point_newindex);
+    lua_setfield(lua, -2, "__newindex");
+    lua_pushcfunction(lua, lua_point_gc);
+    lua_setfield(lua, -2, "__gc");
+    lua_pushcfunction(lua, lua_point_add);
+    lua_setfield(lua, -2, "__add");
+    lua_pushcfunction(lua, lua_point_sub);
+    lua_setfield(lua, -2, "__sub");
+    lua_pushcfunction(lua, lua_point_mul);
+    lua_setfield(lua, -2, "__mul");
+    lua_pushcfunction(lua, lua_point_div);
+    lua_setfield(lua, -2, "__div");
+    lua_pushcfunction(lua, lua_point_unm);
+    lua_setfield(lua, -2, "__unm");
+    lua_pushcfunction(lua, lua_point_eq);
+    lua_setfield(lua, -2, "__eq");
+    lua_pushvalue(lua, -1);
+    lua_setfield(lua, LUA_REGISTRYINDEX, REG_POINT);
+    lua_setfield(lua, -2, "point");
     lua_setfield(lua, -2, "geometry");
 }

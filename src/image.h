@@ -81,6 +81,9 @@ Image *image_copy(const Image *src);
 Image *image_inverted_copy(const Image *src);
 Image *image_faded_copy(const Image *src, double alpha, int dither);
 Image *image_scaled_copy(const Image *src, double xscale, double yscale);
+Image *image_rotated_copy(const Image *src, double angle_deg,
+                          double xscale, double yscale,
+                          double centerx, double centery);
 void image_clear(Image *image, int color);
 void image_free(Image *image);
 void imagetable_free(Imagetable *table);
@@ -102,6 +105,14 @@ void image_blit_scaled(DrawTarget *target, const Image *image, int x, int y,
                        double xscale, double yscale, int draw_mode,
                        int offset_x, int offset_y, int ignore_offset,
                        int clip_x, int clip_y, int clip_w, int clip_h);
+/* Blit an image centered at (x, y), rotated by angle degrees (positive =
+ * clockwise on screen, y points down), optionally scaled. Nearest
+ * sampling, same draw modes / clip / offset rules as image_blit. */
+void image_blit_rotated(DrawTarget *target, const Image *image, int x, int y,
+                        double angle_deg, double xscale, double yscale,
+                        int draw_mode,
+                        int offset_x, int offset_y, int ignore_offset,
+                        int clip_x, int clip_y, int clip_w, int clip_h);
 void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
                       double alpha, int dither, int draw_mode,
                       int offset_x, int offset_y, int ignore_offset,
@@ -111,6 +122,11 @@ void image_blit_faded(DrawTarget *target, const Image *image, int x, int y,
  * 0 none, 1 diagonal line, 2 vertical line, 3 horizontal line, 4 screen,
  * 5 Bayer 2x2, 6 Bayer 4x4, 7 Bayer 8x8. */
 double image_dither_value(int dither, int x, int y);
+
+/* Estimated text width in pixels (8 px per character at the 16 px
+ * font height); fonts are not rendered, so this is an approximation
+ * that keeps text-sizing code from producing 0-width images. */
+int text_width_estimate(const char *s);
 
 /* Lua bindings. image_install(lua) creates playdate.graphics.image,
  * .imagetable, .tilemap and .font on the playdate table at the top of
