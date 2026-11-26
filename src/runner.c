@@ -72,22 +72,27 @@ static const char *entry_data(const unsigned char *pdz, size_t offset,
     *flag_out = entry & 15;
     *decoded_out = NULL;
     if (entry & 128) {
-        if (length < 4)
+        /* Compressed PDA entries retain their four-byte audio header
+         * before the decompressed-size field and zlib stream. */
+        size_t prefix = *flag_out == 5 ? 4 : 0;
+        if (length < prefix + 4)
             return "invalid compressed PDZ entry";
-        unsigned long expected = read_le32(data);
+        unsigned long expected = read_le32(data + prefix);
         if (expected == 0 || expected > MAX_CHUNK)
             return "PDZ entry exceeds probe limit or is empty";
-        unsigned char *decoded = malloc(expected);
+        unsigned char *decoded = malloc(expected + prefix);
         if (!decoded)
             return "out of memory";
+        if (prefix)
+            memcpy(decoded, data, prefix);
         unsigned long actual = expected;
-        if (uncompress(decoded, &actual, data + 4, length - 4) != Z_OK ||
+        if (uncompress(decoded + prefix, &actual, data + prefix + 4, length - prefix - 4) != Z_OK ||
             actual != expected) {
             free(decoded);
             return "failed to decompress PDZ entry";
         }
         data = decoded;
-        length = actual;
+        length = actual + prefix;
         *decoded_out = decoded;
     }
     if (length > MAX_CHUNK) {
