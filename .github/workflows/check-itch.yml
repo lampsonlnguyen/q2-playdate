@@ -48,6 +48,10 @@ jobs:
         run: |
           make card BUILD=build/mipsel CC=mipsel-linux-gnu-gcc CPPFLAGS="-I$RUNNER_TEMP/mipsel-zlib/include" LDFLAGS="-static -L$RUNNER_TEMP/mipsel-zlib/lib"
           unzip -t build/mipsel/q2-playdate-card.zip
+          for icon in icon.png icon-40.png pane.png; do
+            unzip -Z1 build/mipsel/q2-playdate-card.zip | grep -Fx ".playdate/$icon"
+          done
+          python3 -c 'import struct, zipfile; z=zipfile.ZipFile("build/mipsel/q2-playdate-card.zip"); assert all(struct.unpack(">II", z.read(".playdate/"+n)[16:24]) == (s,s) for n,s in [("icon.png",52),("icon-40.png",40),("pane.png",96)])'
       - name: Upload installable card
         uses: actions/upload-artifact@v4
         with:

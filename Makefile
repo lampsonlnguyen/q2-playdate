@@ -74,10 +74,10 @@ $(SDK_PDC):
 	mv "$@.tmp" "$@"
 	rm -f "$@.tar.gz"
 
-card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch $(PDC_DEP)
+card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch $(PDC_DEP) icon.png icon-40.png pane.png
 	readelf -h $< | grep -q 'Machine:.*MIPS'
 	mkdir -p $(BUILD)/card/.playdate/games
-	cp $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch q2app LICENSE $(BUILD)/card/.playdate/
+	cp $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch q2app LICENSE icon.png icon-40.png pane.png $(BUILD)/card/.playdate/
 	cp $(LUA_DIR)/doc/readme.html $(BUILD)/card/.playdate/Lua-license.html
 	cp "$(Q2_CA_BUNDLE)" $(BUILD)/card/.playdate/itch-ca.pem
 	cp itch/NOTICE itch/NextUI-Itchio-Pak-LICENSE itch/COPYING $(BUILD)/card/.playdate/
@@ -86,7 +86,7 @@ card: $(BUILD)/q2-playdate $(BUILD)/q2-playdate-itch $(PDC_DEP)
 	cp $(TINYALSA_DIR)/LICENSE $(BUILD)/card/.playdate/TinyALSA-license.txt
 	"$(PDC)" demo $(BUILD)/card/.playdate/demo.pdx
 	"$(PDC)" demos/save-tone $(BUILD)/card/.playdate/games/Save-and-Tone.pdx
-	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/q2-playdate .playdate/q2-playdate-itch .playdate/itch-ca.pem .playdate/NOTICE .playdate/NextUI-Itchio-Pak-LICENSE .playdate/COPYING .playdate/Go-license.txt .playdate/x-net-license.txt .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
+	cd $(BUILD)/card && rm -f ../q2-playdate-card.zip && zip -q -r ../q2-playdate-card.zip .playdate/q2app .playdate/icon.png .playdate/icon-40.png .playdate/pane.png .playdate/q2-playdate .playdate/q2-playdate-itch .playdate/itch-ca.pem .playdate/NOTICE .playdate/NextUI-Itchio-Pak-LICENSE .playdate/COPYING .playdate/Go-license.txt .playdate/x-net-license.txt .playdate/LICENSE .playdate/Lua-license.html .playdate/TinyALSA-license.txt .playdate/demo.pdx .playdate/games/
 
 ARM_AS ?= arm-none-eabi-as
 ARM_LD ?= arm-none-eabi-ld
