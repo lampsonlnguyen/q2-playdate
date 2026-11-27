@@ -91,6 +91,7 @@ void picker_draw(const Picker *picker, uint8_t frame[PICKER_HEIGHT][PICKER_WIDTH
 {
     memset(frame, 0, PICKER_HEIGHT * PICKER_WIDTH);
     picker_label(frame, 16, 14, error[0] ? "CANNOT RUN GAME" : "Q2 PLAYDATE", 46, 1);
+    picker_label(frame, 296, 14, Q2_BUILD_ID, 12, 1);
     if (error[0]) {
         size_t length = strlen(error);
         for (size_t offset = 0; offset < 184 && offset < length; offset += 46)

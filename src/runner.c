@@ -308,6 +308,21 @@ static void open_game_libraries(lua_State *lua)
     }
 }
 
+static int initialization_traceback(lua_State *lua)
+{
+    const char *message = lua_tostring(lua, 1);
+    luaL_traceback(lua, lua, message ? message : "Lua initialization failed", 1);
+    fprintf(stderr, "q2-playdate initialization:\n%s\n", lua_tostring(lua, -1));
+    FILE *log = fopen(CARD_ROOT "/last-error.txt", "a");
+    if (log) {
+        fprintf(log, "%s\n", lua_tostring(lua, -1));
+        fclose(log);
+    }
+    /* Preserve the concise original error for the on-screen picker. */
+    lua_pop(lua, 1);
+    return 1;
+}
+
 static void limit_instructions(lua_State *lua, lua_Debug *debug)
 {
     (void)debug;
@@ -383,13 +398,16 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
              * limit would kill any real game after a few frames.
              * The hook is cleared once the main chunk has run. */
             lua_sethook(lua, limit_instructions, LUA_MASKCOUNT, 2000000);
+            lua_pushcfunction(lua, initialization_traceback);
+            int handler = lua_gettop(lua);
             problem = load_chunk(lua, pdz, main_offset, "@main");
-            if (!problem && lua_pcall(lua, 0, 0, 0) != LUA_OK) {
+            if (!problem && lua_pcall(lua, 0, 0, handler) != LUA_OK) {
                 problem = lua_tostring(lua, -1);
                 if (!problem)
                     problem = "Lua initialization failed";
             }
             lua_sethook(lua, NULL, 0, 0);
+            lua_remove(lua, handler);
         }
     }
 
@@ -404,6 +422,10 @@ lua_State *bundle_open(const char *bundle, void (*setup)(lua_State *),
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        puts(Q2_BUILD_ID);
+        return 0;
+    }
     /* Q2 Pod supplies an audio device and, on some routes, a volume. */
     if (argc == 1 || (argc <= 3 &&
         (strcmp(argv[1], "plughw:0,0") == 0 || strcmp(argv[1], "usb") == 0 ||

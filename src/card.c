@@ -1441,6 +1441,11 @@ static int run_library(int fd, Display *display)
                 fprintf(stderr, "q2-playdate update error:\n%s\n",
                         message ? message : "Lua update failed");
                 snprintf(error, sizeof error, "%s", message ? message : "Lua update failed");
+                FILE *log = fopen(CARD_ROOT "/last-error.txt", "a");
+                if (log) {
+                    fprintf(log, "Update: %s\n", message ? message : "Lua update failed");
+                    fclose(log);
+                }
                 report_run(frames, work, peak);
                 runtime_silence();
                 lua_close(lua);
@@ -1608,7 +1613,16 @@ static int run_library(int fd, Display *display)
             memset(frame, 0, sizeof frame);
             gfx_reset();
             runtime_configure(path);
+            FILE *log = fopen(CARD_ROOT "/last-error.txt", "w");
+            if (log) {
+                fprintf(log, "Build: %s\nGame: %s\n", Q2_BUILD_ID, path);
+                fclose(log);
+            }
             lua = bundle_open(path, card_lua_init, error, sizeof error);
+            if (!lua) {
+                log = fopen(CARD_ROOT "/last-error.txt", "a");
+                if (log) { fprintf(log, "Launch: %s\n", error); fclose(log); }
+            }
         }
     }
 

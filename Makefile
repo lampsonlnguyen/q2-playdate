@@ -8,6 +8,7 @@ PDC_DEP = $(filter $(SDK_PDC),$(PDC))
 GO ?= go
 Q2_CA_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 BUILD ?= build/host
+BUILD_ID := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LUA_DIR := build/lua54
 LUA_REV := c47f7fe1f14b1c424b0835e6c4fb2df892f358e4
 LUA_SOURCES = $(filter-out $(addprefix $(LUA_DIR)/,lua.c luac.c linit.c loadlib.c loslib.c liolib.c),$(wildcard $(LUA_DIR)/*.c))
@@ -37,7 +38,7 @@ build/json_lua.h: src/json.lua tools/embed_lua.py
 
 $(BUILD)/q2-playdate: src/runner.c src/card.c src/card.h src/bundle.h src/file.c src/file.h src/image.c src/image.h src/picker.c src/picker.h src/runtime.c src/runtime.h src/itch.c src/itch.h build/json_lua.h Makefile $(LUA_DIR)/.pinned $(TINYALSA_DIR)/.pinned
 	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Ibuild -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/file.c src/image.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DQ2_BUILD_ID='"$(BUILD_ID)"' -Ibuild -I$(LUA_DIR) -I$(TINYALSA_DIR)/include $(LDFLAGS) -o $@ src/runner.c src/card.c src/file.c src/image.c src/picker.c src/runtime.c src/itch.c $(TINYALSA_SOURCES) $(LUA_SOURCES) -lm -lz
 
 build/luac: Makefile $(LUA_DIR)/.pinned
 	$(HOST_CC) -O2 -I$(LUA_DIR) -o $@ $(LUA_DIR)/luac.c $(LUA_SOURCES) -lm
