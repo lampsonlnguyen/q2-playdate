@@ -997,8 +997,18 @@ static int lua_image_new(lua_State *lua)
         lua_pushfstring(lua, "image file not found: %s", path);
         return 2;
     }
-    int width = luaL_checkinteger(lua, 1);
-    int height = luaL_checkinteger(lua, 2);
+    /* SDK pixel dimensions accept fractional Lua numbers, truncating
+     * toward zero. Validate before conversion to avoid undefined casts. */
+    double requested_width = luaL_checknumber(lua, 1);
+    double requested_height = luaL_checknumber(lua, 2);
+    luaL_argcheck(lua, isfinite(requested_width) &&
+                  requested_width >= 0 && requested_width < 4097, 1,
+                  "image width out of range");
+    luaL_argcheck(lua, isfinite(requested_height) &&
+                  requested_height >= 0 && requested_height < 4097, 2,
+                  "image height out of range");
+    int width = (int)requested_width;
+    int height = (int)requested_height;
     int color = luaL_optinteger(lua, 3, 2);
     /* A 0 dimension is clamped to 1: the SDK's simulator rejects a
      * 0-size bitmap, but the device tolerates it, and games size
