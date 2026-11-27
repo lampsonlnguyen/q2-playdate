@@ -94,3 +94,10 @@ int main(int argc, char **argv)
     }
     return 0;
 }
+
+int bundle_font_payload(lua_State *lua, const char *name,
+                        uint8_t **payload, size_t *payload_len)
+{
+    (void)lua; (void)name; (void)payload; (void)payload_len;
+    return -1;
+}

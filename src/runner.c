@@ -129,7 +129,7 @@ static const char *load_chunk(lua_State *lua, const unsigned char *pdz,
 /* Look up a PDZ image/imagetable entry by name and return its raw
  * (decompressed) payload in a malloc'd buffer. Returns 0 on success,
  * -1 when there is no such entry or it is not an image entry. */
-int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
+static int bundle_asset_payload(lua_State *lua, const char *name, int *type,
                          uint8_t **payload, size_t *payload_len)
 {
     lua_getfield(lua, LUA_REGISTRYINDEX, "q2.pdz.index");
@@ -160,7 +160,7 @@ int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
         free(decoded);
         return -1;
     }
-    if (flag != 2 && flag != 3) {
+    if (flag != 2 && flag != 3 && flag != 7) {
         free(decoded);
         return -1;
     }
@@ -171,9 +171,38 @@ int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
     }
     memcpy(copy, data, length);
     free(decoded);
-    *is_table = flag == 3;
+    *type = flag;
     *payload = copy;
     *payload_len = length;
+    return 0;
+}
+
+int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
+                         uint8_t **payload, size_t *payload_len)
+{
+    int type;
+    if (bundle_asset_payload(lua, name, &type, payload, payload_len) != 0)
+        return -1;
+    if (type != 2 && type != 3) {
+        free(*payload);
+        *payload = NULL;
+        return -1;
+    }
+    *is_table = type == 3;
+    return 0;
+}
+
+int bundle_font_payload(lua_State *lua, const char *name,
+                        uint8_t **payload, size_t *payload_len)
+{
+    int type;
+    if (bundle_asset_payload(lua, name, &type, payload, payload_len) != 0)
+        return -1;
+    if (type != 7) {
+        free(*payload);
+        *payload = NULL;
+        return -1;
+    }
     return 0;
 }
 

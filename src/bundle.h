@@ -12,3 +12,6 @@ lua_State *bundle_open(const char *path, void (*setup)(lua_State *),
  * -1 when there is no such entry or it is not an image entry. */
 int bundle_image_payload(lua_State *lua, const char *name, int *is_table,
                          uint8_t **payload, size_t *payload_len);
+
+int bundle_font_payload(lua_State *lua, const char *name,
+                        uint8_t **payload, size_t *payload_len);

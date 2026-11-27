@@ -1704,6 +1704,25 @@ static int lua_font_new(lua_State *lua)
      * uncompiled source format. Try both. */
     if (resolve_path(path, ".pft", full, sizeof full) != 0 &&
         resolve_path(path, ".fnt", full, sizeof full) != 0) {
+        uint8_t *payload = NULL;
+        size_t length;
+        char name[1024];
+        size_t n = strlen(path);
+        if (n < sizeof name) {
+            memcpy(name, path, n + 1);
+            if (n >= 4 && (!strcmp(name + n - 4, ".pft") ||
+                           !strcmp(name + n - 4, ".fnt")))
+                name[n - 4] = 0;
+            if (bundle_font_payload(lua, name, &payload, &length) == 0) {
+                int ok = font_push_payload(lua, name, payload, length);
+                free(payload);
+                if (ok)
+                    return 1;
+                lua_pushnil(lua);
+                lua_pushfstring(lua, "invalid embedded font: %s", path);
+                return 2;
+            }
+        }
         lua_pushnil(lua);
         lua_pushfstring(lua, "font file not found: %s", path);
         return 2;
